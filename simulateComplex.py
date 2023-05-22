@@ -8,7 +8,7 @@ from openmm.vec3 import Vec3
 
 from rdkit import Chem
 
-temperature = 330 * unit.kelvin
+temperature = 300 * unit.kelvin
 equilibration_steps = 200
 reporting_interval = 1000
 
