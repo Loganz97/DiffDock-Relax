@@ -1,3 +1,9 @@
+WIP trying to make this work with openmm 8 and other updated libraries
+
+
+
+
+
 # OpenMM simulation example
 
 This repo is an effort to work out how to run a simulation of a protein-ligand complex with OpenMM.
