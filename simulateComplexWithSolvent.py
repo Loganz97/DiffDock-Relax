@@ -1,9 +1,9 @@
 import sys, time
-from openforcefield.topology import Molecule
+from openff.toolkit.topology import Molecule
 from openmmforcefields.generators import SystemGenerator
 from simtk import unit, openmm
-from simtk.openmm import app, Platform, LangevinIntegrator
-from simtk.openmm.app import PDBFile, Simulation, Modeller, PDBReporter, StateDataReporter, DCDReporter
+from openmm import app, Platform, LangevinIntegrator
+from openmm.app import PDBFile, Simulation, Modeller, PDBReporter, StateDataReporter, DCDReporter
 from rdkit import Chem
 
 
@@ -73,7 +73,7 @@ print('System has %d atoms' % modeller.topology.getNumAtoms())
 # an openforcefield Molecule object that was created from a RDKit molecule.
 # The topology part is described in the openforcefield API but the positions part grabs the first (and only)
 # conformer and passes it to Modeller. It works. Don't ask why!
-modeller.add(ligand_mol.to_topology().to_openmm(), ligand_mol.conformers[0])
+modeller.add(ligand_mol.to_topology().to_openmm(), ligand_mol.conformers[0].to_openmm())
 
 print('System has %d atoms' % modeller.topology.getNumAtoms())
 
