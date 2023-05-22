@@ -1,10 +1,10 @@
 import sys, time
-from openforcefield.topology import Molecule
+from openff.toolkit.topology import Molecule
 from openmmforcefields.generators import SystemGenerator
 from simtk import unit, openmm
-from simtk.openmm import app, Platform, LangevinIntegrator
-from simtk.openmm.app import PDBFile, Simulation, Modeller, PDBReporter, DCDReporter, StateDataReporter
-from simtk.openmm.vec3 import Vec3
+from openmm import app, Platform, LangevinIntegrator
+from openmm.app import PDBFile, Simulation, Modeller, PDBReporter, DCDReporter, StateDataReporter
+from openmm.vec3 import Vec3
 
 from rdkit import Chem
 
@@ -63,7 +63,7 @@ modeller = Modeller(protein_pdb.topology, protein_pdb.positions)
 # an openforcefield Molecule object that was created from a RDKit molecule.
 # The topology part is described in the openforcefield API but the positions part grabs the first (and only)
 # conformer and passes it to Modeller. It works. Don't ask why!
-modeller.add(ligand_mol.to_topology().to_openmm(), ligand_mol.conformers[0])
+modeller.add(ligand_mol.to_topology().to_openmm(), ligand_mol.conformers[0].to_openmm())
 # modeller.topology.setPeriodicBoxVectors(
 #     [Vec3(x=8.461, y=0.0, z=0.0),
 #     Vec3(x=0.0, y=8.461, z=0.0),
