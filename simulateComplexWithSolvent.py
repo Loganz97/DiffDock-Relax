@@ -53,6 +53,7 @@ ligand_mol = Molecule(rdkitmolh)
 
 print('Preparing system')
 # Initialize a SystemGenerator using the GAFF for the ligand and tip3p for the water.
+# Chat-GPT: To use a larger time step, one common approach is to artificially increase the mass of the hydrogens.
 forcefield_kwargs = {'constraints': app.HBonds, 'rigidWater': True, 'removeCMMotion': False, 'hydrogenMass': 4*unit.amu }
 system_generator = SystemGenerator(
     forcefields=['amber/ff14SB.xml', 'amber/tip3p_standard.xml'],
