@@ -1,3 +1,7 @@
+"""
+Simple protein-ligand simluation using openmm
+"""
+
 import sys
 import time
 import argparse
@@ -15,6 +19,9 @@ from rdkit import Chem
 
 FRICTION_COEFF = 1.0 / unit.picosecond
 STEP_SIZE = 0.002 * unit.picoseconds
+SOLVENT_PADDING = 10.0 * unit.angstroms
+BAROSTAT_PRESSURE = 1.0 * unit.atmospheres
+BAROSTAT_FREQUENCY = 25
 
 FORCEFIELD_KWARGS = {'constraints': app.HBonds, 'rigidWater': True, 
                      'removeCMMotion': False, 'hydrogenMass': 4*unit.amu}
@@ -106,6 +113,7 @@ def simulate(pdb_in, mol_in, output, num_steps,
 
     platform = get_platform()
 
+    print("Preparing ligand")
     ligand_mol = prepare_ligand(mol_in)
 
     # Initialize a SystemGenerator using the GAFF for the ligand and tip3p for the water.
@@ -122,10 +130,10 @@ def simulate(pdb_in, mol_in, output, num_steps,
     print(f"System has {modeller.topology.getNumAtoms()} atoms")
 
     # This next bit is black magic.
-    # Modeller needs topology and positions. Lots of trial and error found that this is what works to get these from
-    # an openforcefield Molecule object that was created from a RDKit molecule.
-    # The topology part is described in the openforcefield API but the positions part grabs the first (and only)
-    # conformer and passes it to Modeller. It works. Don't ask why!
+    # Modeller needs topology and positions. Lots of trial and error found that this is what works to get
+    # these from an openforcefield Molecule object that was created from a RDKit molecule.
+    # The topology part is described in the openforcefield API but the positions part grabs the first
+    # (and only) conformer and passes it to Modeller. It works. Don't ask why!
     # modeller.topology.setPeriodicBoxVectors([Vec3(x=8.461, y=0.0, z=0.0), Vec3(x=0.0, y=8.461, z=0.0), Vec3(x=0.0, y=0.0, z=8.461)])
     modeller.add(ligand_mol.to_topology().to_openmm(), ligand_mol.conformers[0].to_openmm())
     print(f"System has {modeller.topology.getNumAtoms()} atoms")
@@ -134,7 +142,7 @@ def simulate(pdb_in, mol_in, output, num_steps,
         # We use the 'padding' option to define the periodic box. The PDB file does not contain any
         # unit cell information so we just create a box that has a 10A padding around the complex.
         print("Adding solvent...")
-        modeller.addSolvent(system_generator.forcefield, model='tip3p', padding=10.0*unit.angstroms)
+        modeller.addSolvent(system_generator.forcefield, model='tip3p', padding=SOLVENT_PADDING)
         print(f"System has {modeller.topology.getNumAtoms()} atoms")
 
     # Output the complex with topology
@@ -148,7 +156,7 @@ def simulate(pdb_in, mol_in, output, num_steps,
 
     # This line is present in the WithSolvent.py version of the script but unclear why
     if use_solvent:
-        system.addForce(MonteCarloBarostat(1*unit.atmospheres, temperature, 25))
+        system.addForce(MonteCarloBarostat(BAROSTAT_PRESSURE, temperature, BAROSTAT_FREQUENCY))
 
     print(f"Uses Periodic box: {system.usesPeriodicBoundaryConditions()}\n"
           f"Default Periodic box: {system.getDefaultPeriodicBoxVectors()}")
@@ -160,7 +168,7 @@ def simulate(pdb_in, mol_in, output, num_steps,
     print("Minimising ...")
     simulation.minimizeEnergy()
 
-    # Write out the minimised PDB. The 'enforcePeriodicBox=False' bit is important otherwise the different
+    # Write out the minimised PDB. 'enforcePeriodicBox=False' is important otherwise the different
     # components can end up in different periodic boxes resulting in really strange looking output.
     with open(output_min, 'w', encoding='utf-8') as outfile:
         PDBFile.writeFile(modeller.topology,
@@ -174,11 +182,12 @@ def simulate(pdb_in, mol_in, output, num_steps,
 
     # Run the simulation.
     # The enforcePeriodicBox arg to the reporters is important.
-    # It's a bit counter-intuitive that the value needs to be False, but this is needed to ensure that
-    # all parts of the simulation end up in the same periodic box when being output.
+    # It's a bit counter-intuitive that the value needs to be False, but this is needed to ensure
+    # that all parts of the simulation end up in the same periodic box when being output.
     # simulation.reporters.append(PDBReporter(output_traj_pdb, reporting_interval, enforcePeriodicBox=False))
     simulation.reporters.append(DCDReporter(output_traj_dcd, reporting_interval, enforcePeriodicBox=False))
     simulation.reporters.append(StateDataReporter(sys.stdout, reporting_interval, step=True, potentialEnergy=True, temperature=True))
+
     print(f"Starting simulation with {num_steps} steps ...")
     time_0 = time.time()
     simulation.step(num_steps)
@@ -188,7 +197,7 @@ def simulate(pdb_in, mol_in, output, num_steps,
     print("Running analysis...")
     df_traj = analyze_traj(output_traj_dcd, output_complex, output_analysis)
 
-    return True
+    return df_traj
 
 
 if __name__ == "__main__":
