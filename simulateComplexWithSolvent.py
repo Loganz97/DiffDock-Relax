@@ -1,142 +1,179 @@
-import sys, time
+import sys
+import time
+import argparse
+
 from openff.toolkit.topology import Molecule
 from openmmforcefields.generators import SystemGenerator
-from simtk import unit, openmm
-from openmm import app, Platform, LangevinIntegrator
+from openmm import app, unit, Platform, LangevinIntegrator
 from openmm.app import PDBFile, Simulation, Modeller, StateDataReporter, DCDReporter
 from rdkit import Chem
 
-temperature = 300 * unit.kelvin
-equilibration_steps = 200
-reporting_interval = 1000
-use_solvent = True
+FRICTION_COEFF = 1.0 / unit.picosecond
+STEP_SIZE = 0.002 * unit.picoseconds
 
-if len(sys.argv) != 5:
-    print('Usage: python simulateComplexWithSolvent.py input.pdb input.mol output num_steps')
-    print('Prepares complex of input.pdb and input.mol and generates complex named output_complex.pdb,')
-    print(' minimised complex named output_minimised.pdb and MD trajectory named output_traj.pdb and/or output_traj.dcd')
-    exit(1)
+FORCEFIELD_KWARGS = {'constraints': app.HBonds, 'rigidWater': True, 
+                     'removeCMMotion': False, 'hydrogenMass': 4*unit.amu }
+
+def get_platform():
+    """Check whether we have a GPU platform and if so set the precision to mixed"""
+
+    platform = max((Platform.getPlatform(i) for i in range(Platform.getNumPlatforms())), 
+                    key=lambda p: p.getSpeed())
+
+    if platform.getName() == 'CUDA' or platform.getName() == 'OpenCL':
+        platform.setPropertyDefaultValue('Precision', 'mixed')
+        print(f"Set precision for platform {platform.getName()} to mixed")
+
+    return platform
 
 
-pdb_in = sys.argv[1]
-mol_in = sys.argv[2]
-output_complex = sys.argv[3] + '_complex.pdb'
-output_traj_pdb = sys.argv[3] + '_traj.pdb'
-output_traj_dcd = sys.argv[3] + '_traj.dcd'
-output_min = sys.argv[3] + '_minimised.pdb'
-num_steps = int(sys.argv[4])
-print('Processing', pdb_in, 'and', mol_in, 'with', num_steps, 'steps generating outputs',
-      output_complex, output_min, output_traj_pdb, output_traj_dcd)
+def prepare_ligand(mol_in):
+    """Read the molfile into RDKit, add Hs and create an openforcefield Molecule object"""
 
-# check whether we have a GPU platform and if so set the precision to mixed
-speed = 0
-for i in range(Platform.getNumPlatforms()):
-    p = Platform.getPlatform(i)
-    # print(p.getName(), p.getSpeed())
-    if p.getSpeed() > speed:
-        platform = p
-        speed = p.getSpeed()
+    print("Reading ligand")
+    rdkitmol = Chem.MolFromMolFile(mol_in)
 
-if platform.getName() == 'CUDA' or platform.getName() == 'OpenCL':
-    platform.setPropertyDefaultValue('Precision', 'mixed')
-    print('Set precision for platform', platform.getName(), 'to mixed')
+    print("Adding hydrogens")
+    rdkitmolh = Chem.AddHs(rdkitmol, addCoords=True)
 
-# Read the molfile into RDKit, add Hs and create an openforcefield Molecule object
-print('Reading ligand')
-rdkitmol = Chem.MolFromMolFile(mol_in)
-print('Adding hydrogens')
-rdkitmolh = Chem.AddHs(rdkitmol, addCoords=True)
-# ensure the chiral centers are all defined
-Chem.AssignAtomChiralTagsFromStructure(rdkitmolh)
-ligand_mol = Molecule(rdkitmolh)
+    # Ensure the chiral centers are all defined
+    Chem.AssignAtomChiralTagsFromStructure(rdkitmolh)
+    return Molecule(rdkitmolh)
 
-# Initialize a SystemGenerator using the GAFF for the ligand and tip3p for the water.
-# Chat-GPT: To use a larger time step, one common approach is to artificially increase the mass of the hydrogens.
-print('Preparing system')
-forcefield_kwargs = {'constraints': app.HBonds, 'rigidWater': True, 'removeCMMotion': False, 'hydrogenMass': 4*unit.amu }
-if use_solvent:
-    system_generator = SystemGenerator(
-        forcefields=['amber/ff14SB.xml', 'amber/tip3p_standard.xml'],
-        small_molecule_forcefield='gaff-2.11',
-        molecules=[ligand_mol],
-        forcefield_kwargs=forcefield_kwargs)
-else:
-    system_generator = SystemGenerator(
-        forcefields=['amber/ff14SB.xml'],
-        small_molecule_forcefield='gaff-2.11',
-        forcefield_kwargs=forcefield_kwargs)
 
-# Use Modeller to combine the protein and ligand into a complex
-print('Reading protein')
-protein_pdb = PDBFile(pdb_in)
+def prepare_system_generator(ligand_mol=None, use_solvent=False):
+    """Prepare system generator"""
 
-print('Preparing complex')
-modeller = Modeller(protein_pdb.topology, protein_pdb.positions)
-print('System has %d atoms' % modeller.topology.getNumAtoms())
+    if use_solvent:
+        system_generator = SystemGenerator(
+            forcefields=['amber/ff14SB.xml', 'amber/tip3p_standard.xml'],
+            small_molecule_forcefield='gaff-2.11',
+            molecules=[ligand_mol],
+            forcefield_kwargs=FORCEFIELD_KWARGS)
+    else:
+        system_generator = SystemGenerator(
+            forcefields=['amber/ff14SB.xml'],
+            small_molecule_forcefield='gaff-2.11',
+            forcefield_kwargs=FORCEFIELD_KWARGS)
 
-# This next bit is black magic.
-# Modeller needs topology and positions. Lots of trial and error found that this is what works to get these from
-# an openforcefield Molecule object that was created from a RDKit molecule.
-# The topology part is described in the openforcefield API but the positions part grabs the first (and only)
-# conformer and passes it to Modeller. It works. Don't ask why!
-# modeller.topology.setPeriodicBoxVectors([Vec3(x=8.461, y=0.0, z=0.0), Vec3(x=0.0, y=8.461, z=0.0), Vec3(x=0.0, y=0.0, z=8.461)])
-modeller.add(ligand_mol.to_topology().to_openmm(), ligand_mol.conformers[0].to_openmm())
+    return system_generator
 
-print('System has %d atoms' % modeller.topology.getNumAtoms())
 
-if use_solvent:
-    # Solvate
-    # we use the 'padding' option to define the periodic box. The PDB file does not contain any
-    # unit cell information so we just create a box that has a 10A padding around the complex.
-    print('Adding solvent...')
-    modeller.addSolvent(system_generator.forcefield, model='tip3p', padding=10.0*unit.angstroms)
-    print('System has %d atoms' % modeller.topology.getNumAtoms())
+def simulate(pdb_in, mol_in, output, num_steps,
+             use_solvent, temperature, equilibration_steps, reporting_interval):
+    """Run simulation"""
 
-# Output the complex with topology
-with open(output_complex, 'w') as outfile:
-    PDBFile.writeFile(modeller.topology, modeller.positions, outfile)
+    output_complex = f"{output}_complex.pdb"
+    output_traj_pdb = f"{output}_traj.pdb"
+    output_traj_dcd = f"{output}_traj.dcd"
+    output_min = f"{output}_minimised.pdb"
 
-# Create the system using the SystemGenerator
-system = system_generator.create_system(modeller.topology, molecules=ligand_mol)
+    print(f"Processing {pdb_in} and {mol_in} with {num_steps} steps generating outputs: "
+          f"{output_complex}, {output_min}, {output_traj_pdb}, {output_traj_dcd}")
 
-integrator = LangevinIntegrator(temperature, 1 / unit.picosecond, 0.002 * unit.picoseconds)
+    platform = get_platform()
 
-# This line is present in the WithSolvent.py version of the script but unclear why
-if use_solvent:
-    system.addForce(openmm.MonteCarloBarostat(1*unit.atmospheres, temperature, 25))
+    ligand_mol = prepare_ligand(mol_in)
 
-print('Uses Periodic box:', system.usesPeriodicBoundaryConditions(),
-      ', Default Periodic box:', system.getDefaultPeriodicBoxVectors())
+    # Initialize a SystemGenerator using the GAFF for the ligand and tip3p for the water.
+    # Chat-GPT: To use a larger time step, artificially increase the mass of the hydrogens.
+    print("Preparing system")
+    system_generator = prepare_system_generator(ligand_mol, use_solvent)
 
-simulation = Simulation(modeller.topology, system, integrator, platform=platform)
-context = simulation.context
-context.setPositions(modeller.positions)
+    # Use Modeller to combine the protein and ligand into a complex
+    print("Reading protein")
+    protein_pdb = PDBFile(pdb_in)
 
-print('Minimising ...')
-simulation.minimizeEnergy()
+    print("Preparing complex")
+    modeller = Modeller(protein_pdb.topology, protein_pdb.positions)
+    print(f"System has {modeller.topology.getNumAtoms()} atoms")
 
-# Write out the minimised PDB. The 'enforcePeriodicBox=False' bit is important otherwise the different
-# components can end up in different periodic boxes resulting in really strange looking output.
-with open(output_min, 'w', encoding='utf-8') as outfile:
-    PDBFile.writeFile(modeller.topology,
-                      context.getState(getPositions=True, enforcePeriodicBox=False).getPositions(),
-                      file=outfile,
-                      keepIds=True)
-    
-# Equilibrate
-context.setVelocitiesToTemperature(temperature)
-print('Equilibrating ...')
-simulation.step(equilibration_steps)
+    # This next bit is black magic.
+    # Modeller needs topology and positions. Lots of trial and error found that this is what works to get these from
+    # an openforcefield Molecule object that was created from a RDKit molecule.
+    # The topology part is described in the openforcefield API but the positions part grabs the first (and only)
+    # conformer and passes it to Modeller. It works. Don't ask why!
+    # modeller.topology.setPeriodicBoxVectors([Vec3(x=8.461, y=0.0, z=0.0), Vec3(x=0.0, y=8.461, z=0.0), Vec3(x=0.0, y=0.0, z=8.461)])
+    modeller.add(ligand_mol.to_topology().to_openmm(), ligand_mol.conformers[0].to_openmm())
+    print(f"System has {modeller.topology.getNumAtoms()} atoms")
 
-# Run the simulation.
-# The enforcePeriodicBox arg to the reporters is important.
-# It's a bit counter-intuitive that the value needs to be False, but this is needed to ensure that
-# all parts of the simulation end up in the same periodic box when being output.
-# simulation.reporters.append(PDBReporter(output_traj_pdb, reporting_interval, enforcePeriodicBox=False))
-simulation.reporters.append(DCDReporter(output_traj_dcd, reporting_interval, enforcePeriodicBox=False))
-simulation.reporters.append(StateDataReporter(sys.stdout, reporting_interval * 5, step=True, potentialEnergy=True, temperature=True))
-print('Starting simulation with', num_steps, 'steps ...')
-t0 = time.time()
-simulation.step(num_steps)
-t1 = time.time()
-print('Simulation complete in', t1 - t0, 'seconds at', temperature)
+    if use_solvent:
+        # We use the 'padding' option to define the periodic box. The PDB file does not contain any
+        # unit cell information so we just create a box that has a 10A padding around the complex.
+        print("Adding solvent...")
+        modeller.addSolvent(system_generator.forcefield, model='tip3p', padding=10.0*unit.angstroms)
+        print(f"System has {modeller.topology.getNumAtoms()} atoms")
+
+    # Output the complex with topology
+    with open(output_complex, 'w', encoding='utf-8') as outfile:
+        PDBFile.writeFile(modeller.topology, modeller.positions, outfile)
+
+    # Create the system using the SystemGenerator
+    system = system_generator.create_system(modeller.topology, molecules=ligand_mol)
+
+    integrator = LangevinIntegrator(temperature, FRICTION_COEFF, STEP_SIZE)
+
+    # This line is present in the WithSolvent.py version of the script but unclear why
+    if use_solvent:
+        system.addForce(openmm.MonteCarloBarostat(1*unit.atmospheres, temperature, 25))
+
+    print(f"Uses Periodic box: {system.usesPeriodicBoundaryConditions()}\n"
+          f"Default Periodic box: {system.getDefaultPeriodicBoxVectors()}")
+
+    simulation = Simulation(modeller.topology, system, integrator, platform=platform)
+    context = simulation.context
+    context.setPositions(modeller.positions)
+
+    print("Minimising ...")
+    simulation.minimizeEnergy()
+
+    # Write out the minimised PDB. The 'enforcePeriodicBox=False' bit is important otherwise the different
+    # components can end up in different periodic boxes resulting in really strange looking output.
+    with open(output_min, 'w', encoding='utf-8') as outfile:
+        PDBFile.writeFile(modeller.topology,
+                          context.getState(getPositions=True, enforcePeriodicBox=False).getPositions(),
+                          file=outfile,
+                          keepIds=True)
+
+    print("Equilibrating ...")
+    context.setVelocitiesToTemperature(temperature)
+    simulation.step(equilibration_steps)
+
+    # Run the simulation.
+    # The enforcePeriodicBox arg to the reporters is important.
+    # It's a bit counter-intuitive that the value needs to be False, but this is needed to ensure that
+    # all parts of the simulation end up in the same periodic box when being output.
+    # simulation.reporters.append(PDBReporter(output_traj_pdb, reporting_interval, enforcePeriodicBox=False))
+    simulation.reporters.append(DCDReporter(output_traj_dcd, reporting_interval, enforcePeriodicBox=False))
+    simulation.reporters.append(StateDataReporter(sys.stdout, reporting_interval, step=True, potentialEnergy=True, temperature=True))
+    print(f"Starting simulation with {num_steps} steps ...")
+    time_0 = time.time()
+    simulation.step(num_steps)
+    time_1 = time.time()
+    print(f"Simulation complete in {time_1 - time_0} seconds at {temperature} K")
+
+    return True
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="OpenMM Simulation")
+    parser.add_argument("pdb_in", type=str, help="Input PDB file")
+    parser.add_argument("mol_in", type=str, help="Input mol file")
+    parser.add_argument("output", type=str, help="Output file name")
+    parser.add_argument("num_steps", type=int, help="Number of simulation steps")
+    parser.add_argument("--use_solvent", type=bool, default=False, help="Use solvent?")
+    parser.add_argument("--temperature", type=float, default=300, help="Temperature in Kelvin")
+    parser.add_argument("--equilibration_steps", type=int, default=200, help="Equilibration steps")
+    parser.add_argument("--reporting_interval", type=int, default=1000, help="Reporting interval")
+    args = parser.parse_args()
+
+    simulate(
+        args.pdb_in,
+        args.mol_in,
+        args.output,
+        args.num_steps,
+        args.use_solvent,
+        args.temperature,
+        args.equilibration_steps,
+        args.reporting_interval,
+    )
