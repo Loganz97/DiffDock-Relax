@@ -4,15 +4,21 @@ import argparse
 
 from openff.toolkit.topology import Molecule
 from openmmforcefields.generators import SystemGenerator
-from openmm import app, unit, Platform, LangevinIntegrator
+
+from openmm import app, unit, Platform, LangevinIntegrator, MonteCarloBarostat
 from openmm.app import PDBFile, Simulation, Modeller, StateDataReporter, DCDReporter
+
+import mdtraj as md
+import pandas as pd
+
 from rdkit import Chem
 
 FRICTION_COEFF = 1.0 / unit.picosecond
 STEP_SIZE = 0.002 * unit.picoseconds
 
 FORCEFIELD_KWARGS = {'constraints': app.HBonds, 'rigidWater': True, 
-                     'removeCMMotion': False, 'hydrogenMass': 4*unit.amu }
+                     'removeCMMotion': False, 'hydrogenMass': 4*unit.amu}
+
 
 def get_platform():
     """Check whether we have a GPU platform and if so set the precision to mixed"""
@@ -59,6 +65,32 @@ def prepare_system_generator(ligand_mol=None, use_solvent=False):
     return system_generator
 
 
+def analyze_traj(traj_in, topol_in, output_analysis):
+    """Run analysis of RMSD for backbone and ligand using mdtraj"""
+
+    t = md.load(traj_in, top=topol_in)
+    print(f"Topology: {t.topology} with n_frames={t.n_frames}")
+
+    lig_atoms = t.topology.select("chainid 1")
+    print(f"{len(lig_atoms)} ligand atoms")
+
+    rmsds_lig = md.rmsd(t, t, frame=0, atom_indices=lig_atoms, parallel=True, precentered=False)
+    print(f"rmsds_lig {rmsds_lig}")
+
+    bb_atoms = t.topology.select("chainid 0 and backbone")
+    print(f"{len(bb_atoms)} backbone atoms")
+
+    rmsds_bck = md.rmsd(t, t, frame=0, atom_indices=bb_atoms, parallel=True, precentered=False)
+
+    df_traj = (pd.DataFrame([t.time, rmsds_bck, rmsds_lig]).T
+                 .applymap(lambda x: round(x, 8))
+                 .rename(columns={0:'time', 1:'rmsd_bck', 2:'rmsd_lig'}))
+
+    df_traj.to_csv("output_MD_analysis.tsv", sep='\t', index=False)
+
+    return df_traj
+
+
 def simulate(pdb_in, mol_in, output, num_steps,
              use_solvent, temperature, equilibration_steps, reporting_interval):
     """Run simulation"""
@@ -67,6 +99,7 @@ def simulate(pdb_in, mol_in, output, num_steps,
     output_traj_pdb = f"{output}_traj.pdb"
     output_traj_dcd = f"{output}_traj.dcd"
     output_min = f"{output}_minimised.pdb"
+    output_analysis = f"{output}_analysis.tsv"
 
     print(f"Processing {pdb_in} and {mol_in} with {num_steps} steps generating outputs: "
           f"{output_complex}, {output_min}, {output_traj_pdb}, {output_traj_dcd}")
@@ -115,7 +148,7 @@ def simulate(pdb_in, mol_in, output, num_steps,
 
     # This line is present in the WithSolvent.py version of the script but unclear why
     if use_solvent:
-        system.addForce(openmm.MonteCarloBarostat(1*unit.atmospheres, temperature, 25))
+        system.addForce(MonteCarloBarostat(1*unit.atmospheres, temperature, 25))
 
     print(f"Uses Periodic box: {system.usesPeriodicBoundaryConditions()}\n"
           f"Default Periodic box: {system.getDefaultPeriodicBoxVectors()}")
@@ -152,6 +185,9 @@ def simulate(pdb_in, mol_in, output, num_steps,
     time_1 = time.time()
     print(f"Simulation complete in {time_1 - time_0} seconds at {temperature} K")
 
+    print("Running analysis...")
+    df_traj = analyze_traj(output_traj_dcd, output_complex, output_analysis)
+
     return True
 
 
@@ -161,7 +197,7 @@ if __name__ == "__main__":
     parser.add_argument("mol_in", type=str, help="Input mol file")
     parser.add_argument("output", type=str, help="Output file name")
     parser.add_argument("num_steps", type=int, help="Number of simulation steps")
-    parser.add_argument("--use_solvent", type=bool, default=False, help="Use solvent?")
+    parser.add_argument("--use_solvent", action='store_true', help="Use solvent?")
     parser.add_argument("--temperature", type=float, default=300, help="Temperature in Kelvin")
     parser.add_argument("--equilibration_steps", type=int, default=200, help="Equilibration steps")
     parser.add_argument("--reporting_interval", type=int, default=1000, help="Reporting interval")
