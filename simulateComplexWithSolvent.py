@@ -3,16 +3,16 @@ from openff.toolkit.topology import Molecule
 from openmmforcefields.generators import SystemGenerator
 from simtk import unit, openmm
 from openmm import app, Platform, LangevinIntegrator
-from openmm.app import PDBFile, Simulation, Modeller, PDBReporter, StateDataReporter, DCDReporter
+from openmm.app import PDBFile, Simulation, Modeller, StateDataReporter, DCDReporter
 from rdkit import Chem
-
 
 temperature = 300 * unit.kelvin
 equilibration_steps = 200
 reporting_interval = 1000
+use_solvent = True
 
 if len(sys.argv) != 5:
-    print('Usage: python simulateComplexWithSolvent2.py input.pdb input.mol output num_steps')
+    print('Usage: python simulateComplexWithSolvent.py input.pdb input.mol output num_steps')
     print('Prepares complex of input.pdb and input.mol and generates complex named output_complex.pdb,')
     print(' minimised complex named output_minimised.pdb and MD trajectory named output_traj.pdb and/or output_traj.dcd')
     exit(1)
@@ -41,7 +41,6 @@ if platform.getName() == 'CUDA' or platform.getName() == 'OpenCL':
     platform.setPropertyDefaultValue('Precision', 'mixed')
     print('Set precision for platform', platform.getName(), 'to mixed')
 
-
 # Read the molfile into RDKit, add Hs and create an openforcefield Molecule object
 print('Reading ligand')
 rdkitmol = Chem.MolFromMolFile(mol_in)
@@ -51,15 +50,21 @@ rdkitmolh = Chem.AddHs(rdkitmol, addCoords=True)
 Chem.AssignAtomChiralTagsFromStructure(rdkitmolh)
 ligand_mol = Molecule(rdkitmolh)
 
-print('Preparing system')
 # Initialize a SystemGenerator using the GAFF for the ligand and tip3p for the water.
 # Chat-GPT: To use a larger time step, one common approach is to artificially increase the mass of the hydrogens.
+print('Preparing system')
 forcefield_kwargs = {'constraints': app.HBonds, 'rigidWater': True, 'removeCMMotion': False, 'hydrogenMass': 4*unit.amu }
-system_generator = SystemGenerator(
-    forcefields=['amber/ff14SB.xml', 'amber/tip3p_standard.xml'],
-    small_molecule_forcefield='gaff-2.11',
-    molecules=[ligand_mol],
-    forcefield_kwargs=forcefield_kwargs)
+if use_solvent:
+    system_generator = SystemGenerator(
+        forcefields=['amber/ff14SB.xml', 'amber/tip3p_standard.xml'],
+        small_molecule_forcefield='gaff-2.11',
+        molecules=[ligand_mol],
+        forcefield_kwargs=forcefield_kwargs)
+else:
+    system_generator = SystemGenerator(
+        forcefields=['amber/ff14SB.xml'],
+        small_molecule_forcefield='gaff-2.11',
+        forcefield_kwargs=forcefield_kwargs)
 
 # Use Modeller to combine the protein and ligand into a complex
 print('Reading protein')
@@ -74,25 +79,34 @@ print('System has %d atoms' % modeller.topology.getNumAtoms())
 # an openforcefield Molecule object that was created from a RDKit molecule.
 # The topology part is described in the openforcefield API but the positions part grabs the first (and only)
 # conformer and passes it to Modeller. It works. Don't ask why!
+# modeller.topology.setPeriodicBoxVectors([Vec3(x=8.461, y=0.0, z=0.0), Vec3(x=0.0, y=8.461, z=0.0), Vec3(x=0.0, y=0.0, z=8.461)])
 modeller.add(ligand_mol.to_topology().to_openmm(), ligand_mol.conformers[0].to_openmm())
 
 print('System has %d atoms' % modeller.topology.getNumAtoms())
 
-# Solvate
-print('Adding solvent...')
-# we use the 'padding' option to define the periodic box. The PDB file does not contain any
-# unit cell information so we just create a box that has a 10A padding around the complex.
-modeller.addSolvent(system_generator.forcefield, model='tip3p', padding=10.0*unit.angstroms)
-print('System has %d atoms' % modeller.topology.getNumAtoms())
+if use_solvent:
+    # Solvate
+    # we use the 'padding' option to define the periodic box. The PDB file does not contain any
+    # unit cell information so we just create a box that has a 10A padding around the complex.
+    print('Adding solvent...')
+    modeller.addSolvent(system_generator.forcefield, model='tip3p', padding=10.0*unit.angstroms)
+    print('System has %d atoms' % modeller.topology.getNumAtoms())
 
+# Output the complex with topology
 with open(output_complex, 'w') as outfile:
     PDBFile.writeFile(modeller.topology, modeller.positions, outfile)
 
 # Create the system using the SystemGenerator
 system = system_generator.create_system(modeller.topology, molecules=ligand_mol)
+
 integrator = LangevinIntegrator(temperature, 1 / unit.picosecond, 0.002 * unit.picoseconds)
-system.addForce(openmm.MonteCarloBarostat(1*unit.atmospheres, temperature, 25))
-print('Default Periodic box:', system.getDefaultPeriodicBoxVectors())
+
+# This line is present in the WithSolvent.py version of the script but unclear why
+if use_solvent:
+    system.addForce(openmm.MonteCarloBarostat(1*unit.atmospheres, temperature, 25))
+
+print('Uses Periodic box:', system.usesPeriodicBoundaryConditions(),
+      ', Default Periodic box:', system.getDefaultPeriodicBoxVectors())
 
 simulation = Simulation(modeller.topology, system, integrator, platform=platform)
 context = simulation.context
@@ -103,11 +117,14 @@ simulation.minimizeEnergy()
 
 # Write out the minimised PDB. The 'enforcePeriodicBox=False' bit is important otherwise the different
 # components can end up in different periodic boxes resulting in really strange looking output.
-with open(output_min, 'w') as outfile:
-    PDBFile.writeFile(modeller.topology, context.getState(getPositions=True, enforcePeriodicBox=False).getPositions(), file=outfile, keepIds=True)
-
-# equilibrate
-simulation.context.setVelocitiesToTemperature(temperature)
+with open(output_min, 'w', encoding='utf-8') as outfile:
+    PDBFile.writeFile(modeller.topology,
+                      context.getState(getPositions=True, enforcePeriodicBox=False).getPositions(),
+                      file=outfile,
+                      keepIds=True)
+    
+# Equilibrate
+context.setVelocitiesToTemperature(temperature)
 print('Equilibrating ...')
 simulation.step(equilibration_steps)
 
