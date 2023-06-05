@@ -126,6 +126,7 @@ def prepare_protein(in_pdb_file:str, out_pdb_file:str, minimize_pdb:bool=False) 
 
 def get_pdb_and_extract_ligand(pdb_id:str,
                                ligand_id:str|None=None,
+                               ligand_chain:str|None=None,
                                out_dir:str='.',
                                use_pdb_redo:bool=False,
                                minimize_pdb:bool=False,
@@ -139,6 +140,7 @@ def get_pdb_and_extract_ligand(pdb_id:str,
     Parameters:
     pdb_id (str): The 4-letter PDB ID.
     ligand_id (str): The 3-letter ligand ID.
+    ligand_chain (str): If you want to specify the chain of the ligand. Defaults to None.
     out_dir (str): The output directory. Defaults to '.'.
     use_pdb_redo (bool): If True, use pdb_redo to download PDB file, resulting in a {pdb_id}_final.pdb file. Defaults to False.
     minimize_pdb (bool): If True, minimize the PDB file. Defaults to False.
@@ -149,6 +151,7 @@ def get_pdb_and_extract_ligand(pdb_id:str,
     """
 
     # TODO what if there is a PDB file already? It might be a custom file
+    os.makedirs(out_dir, exist_ok=True)
     out_pdb_file = str(Path(out_dir) / f"{pdb_id}_fixed.pdb")
     out_sdf_file = str(Path(out_dir) / f"{pdb_id}_{ligand_id}.sdf")
     out_smi_file = str(Path(out_dir) / f"{pdb_id}_{ligand_id}.smi")
@@ -167,7 +170,10 @@ def get_pdb_and_extract_ligand(pdb_id:str,
         for line in open(pdb_file, encoding='utf-8'):
             # include all CONECT lines just in case since some apply to the ligand? (not in pdb-redo files or pdbfixer files)
             if line.startswith("HETATM") and line[17:20] == ligand_id or line.startswith("CONECT"):
-                out_ligand_pdb.write(line)
+                if ligand_chain is None or ligand_chain == line[21]:
+                    ligand_chain = line[21]
+                    out_ligand_pdb.write(line)
+
         out_ligand_pdb.flush()
         out_ligand_pdb.seek(0)
 
@@ -237,7 +243,7 @@ def make_decoy(reference_rmol, decoy_smiles, num_conformers = 100):
     return decoy_rmol, decoy_mol, best_conformer
 
 
-def prepare_ligand_for_MD(mol_filename:str):
+def prepare_ligand_for_MD(mol_filename:str, is_sanitize:bool=True):
     """
     Prepare a ligand for Molecular Dynamics (MD) simulation.
 
@@ -246,13 +252,14 @@ def prepare_ligand_for_MD(mol_filename:str):
 
     Parameters:
     mol_filename (str): Path to the sdf or mol file to read.
+    is_sanitize (bool): Some SDFs are not sanitizable, which is a problem for OpenMM. Defaults to True.
 
     Returns:
     tuple: A tuple containing:
         - rdkit.Chem.rdchem.Mol: The RDKit molecule object with Hydrogens added.
         - openff.toolkit.topology.Molecule: The openforcefield Molecule object created from the RDKit molecule.
     """
-    ligand_rmol = Chem.MolFromMolFile(mol_filename)
+    ligand_rmol = Chem.MolFromMolFile(mol_filename, sanitize=is_sanitize)
     ligand_rmol = Chem.AddHs(ligand_rmol, addCoords=True)
 
     # Ensure the chiral centers are all defined
@@ -442,8 +449,8 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     out_smina_affinity.write("time_ps\taffinity\n")
 
     print(f"Processing {pdb_in} and {mol_in} with {num_steps} steps generating outputs:\n"
-          f"- {output_args_json}\n- {output_complex_pdb}\n- {output_traj_dcd}\n- {output_minimized_pdb}\n"
-          f"- {output_state_tsv}\n- {output_analysis_tsv}\n")
+          f"- {output_complex_pdb}\n- {output_traj_dcd}\n- {output_minimized_pdb}\n"
+          f"- {output_state_tsv}\n- {output_analysis_tsv}\n- {output_smina_affinity_tsv}\n- {output_args_json}\n")
 
     # -------------------------------------------------------
     # Set up system
