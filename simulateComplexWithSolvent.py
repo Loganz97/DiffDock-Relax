@@ -18,6 +18,9 @@ import mdtraj as md
 import numpy as np
 import pandas as pd
 
+import MDAnalysis as mda
+from MDAnalysis.coordinates.PDB import PDBWriter
+
 from openff.toolkit.topology import Molecule
 from openmm import app, unit, LangevinIntegrator, MonteCarloBarostat, Platform
 from openmm.app import DCDReporter, Modeller, PDBFile, Simulation, StateDataReporter
@@ -121,7 +124,8 @@ def prepare_protein(in_pdb_file:str, out_pdb_file:str, minimize_pdb:bool=False) 
     return True
 
 
-def get_pdb_and_extract_ligand(pdb_id:str, ligand_id:str,
+def get_pdb_and_extract_ligand(pdb_id:str,
+                               ligand_id:str|None=None,
                                out_dir:str='.',
                                use_pdb_redo:bool=False,
                                minimize_pdb:bool=False,
@@ -156,9 +160,12 @@ def get_pdb_and_extract_ligand(pdb_id:str, ligand_id:str,
         pdb_file = str(Path(out_dir) / f"{pdb_id}.pdb")
         subprocess.run(f"wget -O {pdb_file} https://files.rcsb.org/download/{pdb_id}.pdb", check=True, shell=True, capture_output=True)
 
+    if ligand_id is None:
+        return {"original_pdb": pdb_file, "pdb": out_pdb_file}
+
     with NamedTemporaryFile('w', suffix=".pdb") as out_ligand_pdb:
         for line in open(pdb_file, encoding='utf-8'):
-            # include all CONECT lines since some apply to the ligand
+            # include all CONECT lines just in case since some apply to the ligand? (not in pdb-redo files or pdbfixer files)
             if line.startswith("HETATM") and line[17:20] == ligand_id or line.startswith("CONECT"):
                 out_ligand_pdb.write(line)
         out_ligand_pdb.flush()
@@ -365,18 +372,31 @@ def get_smina_affinity(pdb_in:str, ligand_id:str) -> float:
     return affinity
 
 
-def extract_pdbs_from_dcd(complex_pdb:str, trajectory_dcd:str, stride:int=1_000) -> dict:
-    import MDAnalysis as mda
-    from MDAnalysis.coordinates.PDB import PDBWriter
+def extract_pdbs_from_dcd(complex_pdb:str, trajectory_dcd:str) -> dict:
+    """
+    Extracts individual PDB structures from a molecular dynamics trajectory (DCD file) and stores them in a dictionary.
 
-    # Load a universe from the DCD file
+    This function takes as input a PDB file representing the initial structure of the system, and a DCD file
+    containing the molecular dynamics trajectory. It iterates over the trajectory and writes out individual
+    PDB files for each frame.
+
+    Parameters:
+    complex_pdb : str
+        Path to the initial PDB complex file (output of openmm) representing the structure of the protein + ligand.
+
+    trajectory_dcd : str
+        Path to the DCD file containing the molecular dynamics trajectory.
+
+    Returns:
+    dict: keys are simulation time points in picoseconds and values are paths to PDB files.
+    """
     universe = mda.Universe(complex_pdb, trajectory_dcd)
 
     traj_pdbs = {}
     for ts in universe.trajectory:
-        print(ts, ts.time, ts.frame)
-        traj_pdbs[int(ts.time)] = f"{Path(complex_pdb).parent / Path(complex_pdb).stem}_f{int(ts.time):d}.pdb"
-        with PDBWriter(traj_pdbs[int(ts.time)]) as out_pdb:
+        time_ps = round(ts.time, 2)
+        traj_pdbs[time_ps] = f"{Path(complex_pdb).parent / Path(complex_pdb).stem}_f{time_ps}.pdb"
+        with PDBWriter(traj_pdbs[time_ps]) as out_pdb:
             out_pdb.write(universe.atoms)
 
     return traj_pdbs
@@ -547,13 +567,10 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     # Calculate affinities during the simulation
     #
     print("Calculating affinities along trajectory...")
-    traj_pdbs = extract_pdbs_from_dcd(output_complex_pdb, output_traj_dcd, 10**(len(str(num_steps // 100))))
-    print("EVERY nth: ", 10**(len(str(num_steps // 100))))
-    traj_affinities = {frame: get_smina_affinity(traj_pdb, OPENMM_DEFAULT_LIGAND_ID) for frame, traj_pdb in traj_pdbs.items()}
-    print("LEN traj", len(traj_affinities))
-    for ts_time, smina_affinity in traj_affinities.items():
-        print(f"Writing time/frame {ts_time}")
-        out_smina_affinity.write(f"{ts_time:d}\t{smina_affinity:.4f}\n")
+    traj_pdbs = extract_pdbs_from_dcd(output_complex_pdb, output_traj_dcd)
+    traj_affinities = {time_ps: get_smina_affinity(traj_pdb, OPENMM_DEFAULT_LIGAND_ID) for time_ps, traj_pdb in traj_pdbs.items()}
+    for time_ps, smina_affinity in traj_affinities.items():
+        out_smina_affinity.write(f"{time_ps:.2f}\t{smina_affinity:.4f}\n")
 
     print("Running trajectory analysis...")
     _ = analyze_traj(output_traj_dcd, output_complex_pdb, output_analysis_tsv)
