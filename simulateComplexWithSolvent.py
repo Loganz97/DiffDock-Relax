@@ -87,7 +87,7 @@ def prepare_protein(in_pdb_file:str, out_pdb_file:str, minimize_pdb:bool=False) 
     fixer.findMissingAtoms()
     fixer.findNonstandardResidues()
 
-    print(f"Prepare protein: {fixer.missingResidues}\n"
+    print(f"Prepare protein:\n"
           f"- Missing residues: {fixer.missingResidues}\n"
           f"- Atoms: {fixer.missingAtoms}\n"
           f"- Terminals: {fixer.missingTerminals}\n"
@@ -356,7 +356,8 @@ def get_smina_affinity(pdb_in:str, ligand_id:str) -> float:
         smina_protein_pdb.seek(0)
 
         # TODO convert pdb to pdbqt too to get flexible side chains? In theory MD sorted this out
-        smina_out = subprocess.run(f"{SMINA_BIN} --cpu {os.cpu_count()} --score_only -r {smina_protein_pdb.name} -l {smina_ligand_pdb.name}",
+        smina_out = subprocess.run(f"{SMINA_BIN} --cpu {os.cpu_count()} --score_only"
+                                   f" -r {smina_protein_pdb.name} -l {smina_ligand_pdb.name}",
                                    check=True, shell=True, capture_output=True).stdout.decode('ascii')
 
     affinity = float(re.findall(smina_affinity_pattern, smina_out)[0])
@@ -364,10 +365,28 @@ def get_smina_affinity(pdb_in:str, ligand_id:str) -> float:
     return affinity
 
 
+def extract_pdbs_from_dcd(complex_pdb:str, trajectory_dcd:str, stride:int=1_000) -> dict:
+    import MDAnalysis as mda
+    from MDAnalysis.coordinates.PDB import PDBWriter
+
+    # Load a universe from the DCD file
+    universe = mda.Universe(complex_pdb, trajectory_dcd)
+
+    traj_pdbs = {}
+    for ts in universe.trajectory:
+        print(ts, ts.time, ts.frame)
+        traj_pdbs[int(ts.time)] = f"{Path(complex_pdb).parent / Path(complex_pdb).stem}_f{int(ts.time):d}.pdb"
+        with PDBWriter(traj_pdbs[int(ts.time)]) as out_pdb:
+            out_pdb.write(universe.atoms)
+
+    return traj_pdbs
+
+
+
 def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
              use_solvent:bool=False, decoy_smiles:str|None=None, minimize_only:bool=False,
              temperature:float=PDB_TEMPERATURE,
-             equilibration_steps:int=200, reporting_interval:int=1000) -> dict:
+             equilibration_steps:int=200, reporting_interval:int|None=None) -> dict:
     """
     Run a molecular dynamics simulation using OpenMM.
 
@@ -383,22 +402,24 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     decoy_smiles (str): The SMILES string of a decoy ligand. If not None, the decoy is used instead of the input ligand.
     temperature (float): The simulation temperature in Kelvin.
     equilibration_steps (int): The number of steps for the equilibration phase of the simulation.
-    reporting_interval (int): The interval (in steps) at which the simulation data is recorded.
+    reporting_interval (int): The interval (in steps) at which the simulation data is recorded. Leave as None to get a number based on num_steps.
 
     Returns:
     pandas.DataFrame: A DataFrame containing the RMSD analysis of the trajectory.
     """
 
-    output_args_json = f"{output}_args.json"
+    os.makedirs(Path(output).parent, exist_ok=True)
     output_complex_pdb = f"{output}_complex.pdb"
     output_traj_dcd = f"{output}_traj.dcd"
     output_minimized_pdb = f"{output}_minimised.pdb"
     output_state_tsv = f"{output}_state.tsv"
     output_analysis_tsv = f"{output}_analysis.tsv"
     output_smina_affinity_tsv = f"{output}_smina_affinity.tsv"
+    output_args_json = f"{output}_args.json"
     json.dump(locals(), open(output_args_json, 'w', encoding='utf-8'), indent=2)
 
     out_smina_affinity = open(output_smina_affinity_tsv, 'w', encoding='utf-8')
+    out_smina_affinity.write("time_ps\taffinity\n")
 
     print(f"Processing {pdb_in} and {mol_in} with {num_steps} steps generating outputs:\n"
           f"- {output_args_json}\n- {output_complex_pdb}\n- {output_traj_dcd}\n- {output_minimized_pdb}\n"
@@ -407,6 +428,10 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     # -------------------------------------------------------
     # Set up system
     #
+
+    # A reasonable number based on the number of steps
+    max_frames_to_report = 100
+    reporting_interval = reporting_interval or 10**(len(str(num_steps // max_frames_to_report)))
 
     platform = get_platform()
 
@@ -491,9 +516,9 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     out_smina_affinity.write(f"min\t{smina_affinity:.4f}\n")
 
     if minimize_only:
-        return {"smina_affinity_tsv": output_smina_affinity_tsv,
-                "complex_pdb": output_complex_pdb,
+        return {"complex_pdb": output_complex_pdb,
                 "minimized_pdb": output_minimized_pdb,
+                "smina_affinity_tsv": output_smina_affinity_tsv,
                 "args_json": output_args_json
                 }
 
@@ -512,17 +537,23 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     simulation.reporters.append(StateDataReporter(output_state_tsv, reporting_interval,
                                                   step=True, potentialEnergy=True, temperature=True))
 
-    smina_affinity = get_smina_affinity(output_minimized_pdb, OPENMM_DEFAULT_LIGAND_ID)
-    out_smina_affinity.write(f"0\t{smina_affinity:.4f}\n")
-
     print(f"Starting simulation with {num_steps} steps ...")
     time_0 = time.time()
     simulation.step(num_steps)
     time_1 = time.time()
     print(f"- Simulation complete in {time_1 - time_0} seconds at {temperature} K\n")
 
-    smina_affinity = get_smina_affinity(output_minimized_pdb, OPENMM_DEFAULT_LIGAND_ID)
-    out_smina_affinity.write(f"{num_steps}\t{smina_affinity:.4f}\n")
+    # -------------------------------------------------------
+    # Calculate affinities during the simulation
+    #
+    print("Calculating affinities along trajectory...")
+    traj_pdbs = extract_pdbs_from_dcd(output_complex_pdb, output_traj_dcd, 10**(len(str(num_steps // 100))))
+    print("EVERY nth: ", 10**(len(str(num_steps // 100))))
+    traj_affinities = {frame: get_smina_affinity(traj_pdb, OPENMM_DEFAULT_LIGAND_ID) for frame, traj_pdb in traj_pdbs.items()}
+    print("LEN traj", len(traj_affinities))
+    for ts_time, smina_affinity in traj_affinities.items():
+        print(f"Writing time/frame {ts_time}")
+        out_smina_affinity.write(f"{ts_time:d}\t{smina_affinity:.4f}\n")
 
     print("Running trajectory analysis...")
     _ = analyze_traj(output_traj_dcd, output_complex_pdb, output_analysis_tsv)
@@ -535,9 +566,10 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     return {"complex_pdb": output_complex_pdb,
             "traj_dcd": output_traj_dcd,
             "minimized_pdb": output_minimized_pdb,
+            "smina_affinity_tsv": output_smina_affinity_tsv,
+            "args_json": output_args_json,
             "state_tsv": output_state_tsv,
             "analysis_tsv": output_analysis_tsv,
-            "args_json": output_args_json
             }
 
 
@@ -554,7 +586,7 @@ if __name__ == "__main__":
     parser.add_argument("--minimize_only", action='store_true', help="Only perform minimization")
     parser.add_argument("--temperature", type=float, default=300.0, help="Temperature in Kelvin")
     parser.add_argument("--equilibration_steps", type=int, default=200, help="Equilibration steps")
-    parser.add_argument("--reporting_interval", type=int, default=1000, help="Reporting interval")
+    parser.add_argument("--reporting_interval", type=int, default=None, help="Reporting interval")
     args = parser.parse_args()
 
     simulate(
