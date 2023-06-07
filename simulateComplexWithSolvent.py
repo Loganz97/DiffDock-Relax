@@ -39,13 +39,13 @@ STEP_SIZE = 0.002 * unit.picoseconds
 SOLVENT_PADDING = 10.0 * unit.angstroms
 BAROSTAT_PRESSURE = 1.0 * unit.atmospheres
 BAROSTAT_FREQUENCY = 25
-FORCEFIELD_KWARGS = {'constraints': app.HBonds, 'rigidWater': True, 
+FORCEFIELD_KWARGS = {'constraints': app.HBonds, 'rigidWater': True,
                      'removeCMMotion': False, 'hydrogenMass': 4*unit.amu}
 FORCEFIELD_PROTEIN = "amber/ff14SB.xml"
 FORCEFIELD_SOLVENT = "amber/tip3p_standard.xml"
 FORCEFIELD_SMALL_MOLECULE = "gaff-2.11"
 
-# when I run a simulation with a protein and an SDF file, 
+# when I run a simulation with a protein and an SDF file,
 # openmm calls the ligand "UNK" in the combined output PDB file
 OPENMM_DEFAULT_LIGAND_ID = "UNK"
 
@@ -115,7 +115,7 @@ def prepare_protein(in_pdb_file:str, out_pdb_file:str, minimize_pdb:bool=False) 
         simulation.context.setPositions(fixer.positions)
         simulation.minimizeEnergy()
 
-        with open(f"{Path(out_pdb_file).stem}_minimized.pdb", 'w', encoding='utf-8') as out:
+        with open(f"{Path(out_pdb_file).parent} / {Path(out_pdb_file).stem}_minimized.pdb", 'w', encoding='utf-8') as out:
             PDBFile.writeFile(fixer.topology,
                               simulation.context.getState(getPositions=True, enforcePeriodicBox=False).getPositions(),
                               file=out,
@@ -264,7 +264,6 @@ def prepare_ligand_for_MD(mol_filename:str, is_sanitize:bool=True):
 
     # Ensure the chiral centers are all defined
     Chem.AssignAtomChiralTagsFromStructure(ligand_rmol)
-
     return ligand_rmol, Molecule(ligand_rmol)
 
 
@@ -294,7 +293,7 @@ def prepare_system_generator(ligand_mol=None, use_solvent=False):
             molecules=[ligand_mol],
             forcefield_kwargs=FORCEFIELD_KWARGS)
     else:
-        # TODO why is molecules not instantiated for use_solvent=False in tdudgeon/simulateComplex.py?
+        # TODO why is `molecules` not passed for use_solvent=False in tdudgeon/simulateComplex.py?
         # is there any harm if it is?
         system_generator = SystemGenerator(
             forcefields=[FORCEFIELD_PROTEIN],
