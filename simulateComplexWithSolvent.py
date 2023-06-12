@@ -30,6 +30,8 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import rdMolTransforms, rdShapeHelpers
 
+import extract_ligands
+
 SMINA_BIN = "./bin/smina"
 
 PDB_PH = 7.4
@@ -129,8 +131,7 @@ def get_pdb_and_extract_ligand(pdb_id:str,
                                ligand_chain:str|None=None,
                                out_dir:str='.',
                                use_pdb_redo:bool=False,
-                               minimize_pdb:bool=False,
-                               remove_h_from_ligand:bool=True) -> dict:
+                               minimize_pdb:bool=False) -> dict:
     """
     Download a PDB file, prepare it for MD, and extract a ligand.
 
@@ -150,38 +151,48 @@ def get_pdb_and_extract_ligand(pdb_id:str,
     filename_dict (dict): a dict of the files produced
     """
 
-    # TODO what if there is a PDB file already? It might be a custom file
     os.makedirs(out_dir, exist_ok=True)
-    out_pdb_file = str(Path(out_dir) / f"{pdb_id}_fixed.pdb")
-    out_sdf_file = str(Path(out_dir) / f"{pdb_id}_{ligand_id}.sdf")
-    out_smi_file = str(Path(out_dir) / f"{pdb_id}_{ligand_id}.smi")
 
-    if use_pdb_redo:
+    if pdb_id.endswith(".pdb"):
+        pdb_file = pdb_id
+        pdb_id = Path(pdb_file).stem
+    elif use_pdb_redo:
         pdb_file = str(Path(out_dir) / f"{pdb_id}_final.pdb")
         subprocess.run(f"wget -O {pdb_file} https://pdb-redo.eu/db/{pdb_id}/{pdb_id}_final.pdb", check=True, shell=True, capture_output=True)
     else:
         pdb_file = str(Path(out_dir) / f"{pdb_id}.pdb")
         subprocess.run(f"wget -O {pdb_file} https://files.rcsb.org/download/{pdb_id}.pdb", check=True, shell=True, capture_output=True)
 
-    if ligand_id is None:
-        return {"original_pdb": pdb_file, "pdb": out_pdb_file}
+    prepared_pdb_file = str(Path(out_dir) / f"{pdb_id}_fixed.pdb")
+    #out_sdf_file = str(Path(out_dir) / f"{pdb_id}_{ligand_id}.sdf")
+    #out_smi_file = str(Path(out_dir) / f"{pdb_id}_{ligand_id}.smi")
 
-    with NamedTemporaryFile('w', suffix=".pdb") as out_ligand_pdb:
-        for line in open(pdb_file, encoding='utf-8'):
-            # include all CONECT lines just in case since some apply to the ligand? (not in pdb-redo files or pdbfixer files)
-            if line.startswith("HETATM") and line[17:20] == ligand_id or line.startswith("CONECT"):
-                if ligand_chain is None or ligand_chain == line[21]:
-                    ligand_chain = line[21]
-                    out_ligand_pdb.write(line)
+    # FIXFIX is it ok to prepare_protein BEFORE extracting the ligand?
+    prepare_protein(pdb_file, prepared_pdb_file, minimize_pdb=minimize_pdb)
 
-        out_ligand_pdb.flush()
-        out_ligand_pdb.seek(0)
+    if ligand_id is None: # then extract nothing, just prepare the protein
+        return {"original_pdb": pdb_file, "pdb": prepared_pdb_file}
 
-        prepare_protein(pdb_file, out_pdb_file, minimize_pdb=minimize_pdb)
-        subprocess.run(f"obabel {out_ligand_pdb.name} -O {out_sdf_file}{' -d' if remove_h_from_ligand else ''}", check=True, shell=True, capture_output=True)
-        subprocess.run(f"obabel {out_sdf_file} -osmi -O {out_smi_file}", check=True, shell=True, capture_output=True)
+    # _out_pdb_file is just the protein selection (not prepared for openmm)
+    _out_pdb_file, out_sdf_files, out_sdf_smileses = extract_ligands.extract_ligands(pdb_file, [ligand_id], [ligand_chain])
 
-    return {"original_pdb": pdb_file, "pdb": out_pdb_file, "sdf": out_sdf_file, "smi": out_smi_file}
+    return {"original_pdb": pdb_file, "pdb": prepared_pdb_file, "sdf": out_sdf_files[0], "smi": out_sdf_smileses[0]}
+
+    #with NamedTemporaryFile('w', suffix=".pdb") as out_ligand_pdb:
+    #    for line in open(pdb_file, encoding='utf-8'):
+    #        # include all CONECT lines just in case since some apply to the ligand? (not in pdb-redo files or pdbfixer files)
+    #        if line.startswith("HETATM") and line[17:20] == ligand_id or line.startswith("CONECT"):
+    #            if ligand_chain is None or ligand_chain == line[21]:
+    #                ligand_chain = line[21]
+    #                out_ligand_pdb.write(line)
+#
+    #    out_ligand_pdb.flush()
+    #    out_ligand_pdb.seek(0)
+#
+    #    subprocess.run(f"obabel {out_ligand_pdb.name} -O {out_sdf_file}{' -d' if remove_h_from_ligand else ''}", check=True, shell=True, capture_output=True)
+    #    subprocess.run(f"obabel {out_sdf_file} -osmi -O {out_smi_file}", check=True, shell=True, capture_output=True)
+
+    #return {"original_pdb": pdb_file, "pdb": out_pdb_file, "sdf": out_sdf_file, "smi": out_smi_file}
 
 
 def _transform_conformer_to_match_reference(ref_rmol, alt_rmol, ref_conformer_n, alt_conformer_n):
@@ -356,8 +367,9 @@ def get_smina_affinity(pdb_in:str, ligand_id:str) -> float:
     str: The predicted binding affinity of the molecule to the protein.
     """
     smina_affinity_pattern = r"Affinity:\s*([\-\.\d+]+)"
-
-    with NamedTemporaryFile('w', suffix=".pdb", delete=False) as smina_ligand_pdb, NamedTemporaryFile('w', suffix=".pdb", delete=False) as smina_protein_pdb:
+    print("pdb_in", pdb_in)
+    with (NamedTemporaryFile('w', suffix=".pdb", delete=False) as smina_ligand_pdb,
+          NamedTemporaryFile('w', suffix=".pdb", delete=False) as smina_protein_pdb):
         for line in open(pdb_in, encoding='utf-8'):
             if line.startswith("HETATM") and line[17:20] == ligand_id or line.startswith("CONECT"):
                 smina_ligand_pdb.write(line)
@@ -540,6 +552,7 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
 
     smina_affinity = get_smina_affinity(output_minimized_pdb, OPENMM_DEFAULT_LIGAND_ID)
     out_smina_affinity.write(f"min\t{smina_affinity:.4f}\n")
+    out_smina_affinity.flush()
 
     if minimize_only:
         return {"complex_pdb": output_complex_pdb,
