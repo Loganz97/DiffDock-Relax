@@ -8,9 +8,9 @@ Requires pymol, which can be difficult to install:
 from pymol import cmd
 
 AA_MAP_3_1 = {
-    'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E', 'PHE': 'F', 
-    'GLY': 'G', 'HIS': 'H', 'ILE': 'I', 'LYS': 'K', 'LEU': 'L', 
-    'MET': 'M', 'ASN': 'N', 'PRO': 'P', 'GLN': 'Q', 'ARG': 'R', 
+    'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E', 'PHE': 'F',
+    'GLY': 'G', 'HIS': 'H', 'ILE': 'I', 'LYS': 'K', 'LEU': 'L',
+    'MET': 'M', 'ASN': 'N', 'PRO': 'P', 'GLN': 'Q', 'ARG': 'R',
     'SER': 'S', 'THR': 'T', 'VAL': 'V', 'TRP': 'W', 'TYR': 'Y',
 }
 AA_MAP_1_3 = {v:k for k, v in AA_MAP_3_1.items()}
@@ -29,10 +29,8 @@ def mutate_pdb(pdb_file:str, chains:str, res_num:int, aa:str, check_original_aa:
     Returns:
     out_file (str): the mutated pdb file following the format: {pdb_file stem}_{chain}_{residue number}{mutated aa}.pdb
     """
-    #if "pymol" in sys.modules:
-
     # important!! otherwise pymol holds onto state
-    cmd.reinitialize() 
+    cmd.reinitialize()
 
     if len(aa) == 3:
         aa_3 = aa.upper()
@@ -86,4 +84,4 @@ def mutate_pdb(pdb_file:str, chains:str, res_num:int, aa:str, check_original_aa:
 
 if __name__ == "__main__":
     print("test mutate_pdb")
-    mutate_pdb("5WKC.pdb", "ABDE", 191, "ILE", check_original_aa="VAL")
+    mutate_pdb("4O75.pdb", "A", 65, "ILE", check_original_aa="TYR")

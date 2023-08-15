@@ -1,4 +1,6 @@
+out/
 .idea
+*.pdb
 complex*.pdb
 minimised*.pdb
 output*.pdb
