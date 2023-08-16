@@ -1,8 +1,5 @@
 """
 Simple protein-ligand simulation using openmm
-
-Can use decoys, e.g., staurosporine: "C[C@@]12[C@@H]([C@@H](C[C@@H](O1)N3C4=CC=CC=C4C5=C6C(=C7C8=CC=CC=C8N2C7=C53)CNC6=O)NC)OC"
-
 """
 
 import json
@@ -17,6 +14,7 @@ from warnings import warn
 import mdtraj as md
 import numpy as np
 import pandas as pd
+import requests
 
 import MDAnalysis as mda
 from MDAnalysis.coordinates.PDB import PDBWriter
@@ -33,6 +31,9 @@ from rdkit.Chem import rdMolTransforms, rdShapeHelpers
 import extract_ligands
 
 SMINA_BIN = "./bin/smina"
+GNINA_BIN = "./bin/gnina"
+OBABEL_BIN = "obabel"
+GNINA_LINUX_URL = "https://github.com/gnina/gnina/releases/download/v1.0.3/gnina"
 
 PDB_PH = 7.4
 PDB_TEMPERATURE = 300 * unit.kelvin
@@ -50,6 +51,25 @@ FORCEFIELD_SMALL_MOLECULE = "gaff-2.11"
 # when I run a simulation with a protein and an SDF file,
 # openmm calls the ligand "UNK" in the combined output PDB file
 OPENMM_DEFAULT_LIGAND_ID = "UNK"
+
+
+def download_gnina_if_missing():
+    """download gnina binary"""
+    if not Path(GNINA_BIN).exists():
+        print("Downloading necessary gnina binary (~300Mb)")
+        with requests.get(GNINA_LINUX_URL, timeout=600, stream=True) as r:
+            r.raise_for_status()
+            os.makedirs(Path(GNINA_BIN).parent, exist_ok=True)
+            with open(GNINA_BIN, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    f.write(chunk)
+            os.chmod(GNINA_BIN, 0o755)
+        print("Downloaded gnina binary")
+    return True
+
+
+download_gnina_if_missing()
+
 
 def get_platform():
     """Check whether we have a GPU platform and if so set the precision to mixed"""
@@ -106,6 +126,9 @@ def prepare_protein(in_pdb_file:str, out_pdb_file:str, minimize_pdb:bool=False) 
         if res.name == 'DMS':
             warn("DMSO found in PDB file. Maybe remove?")
 
+    # Note in the process of adding missing residues, some weird proteins are created
+    # .e.g, the PDB file could list the first N residues, but have no co-ordinates
+    # Then some combination of PDBFixer and openmm place these residues but in a straight line
     with open(out_pdb_file, 'w', encoding='utf-8') as out:
         PDBFile.writeFile(fixer.topology, fixer.positions, file=out, keepIds=True)
 
@@ -354,22 +377,28 @@ def analyze_traj(traj_in: str, topol_in:str, output_traj_analysis:str) -> pd.Dat
     return df_traj
 
 
-def get_smina_affinity(pdb_in:str, ligand_id:str) -> float:
+def get_smina_affinity(pdb_in:str, ligand_id:str, convert_to_pdbqt:bool=False) -> float:
     """
     Calculates the predicted binding affinity of a molecule to a protein using smina.
     The lower the binding affinity, the stronger the expected binding.
 
+    Due to a weird intermittent bug in smina/gnina, allow conversion of the
+    PDB file to PDBQT format with obabel. I am still unclear on what's going on here.
+
     Parameters:
-    pdb_in (str): The path to the input protein file in PDB format.
-    mol_in (str): The path to the input molecule file in mol format.
+    pdb_in (str): The path to the input protein+ligand PDB file.
+    ligand_id (str): The id of the ligand within the PDB file.
+    convert_to_pdbqt (bool): If True, convert the PDB file to PDBQT format before running smina.
+        Defaults to False.
 
     Returns:
-    str: The predicted binding affinity of the molecule to the protein.
+    float: The predicted binding affinity of the ligand to the protein.
     """
     smina_affinity_pattern = r"Affinity:\s*([\-\.\d+]+)"
     print("pdb_in", pdb_in)
-    with (NamedTemporaryFile('w', suffix=".pdb", delete=False) as smina_ligand_pdb,
-          NamedTemporaryFile('w', suffix=".pdb", delete=False) as smina_protein_pdb):
+    with (NamedTemporaryFile('w', suffix="_ligand.pdb", delete=False) as smina_ligand_pdb,
+          NamedTemporaryFile('w', suffix="_protein.pdb", delete=False) as smina_protein_pdb,
+          NamedTemporaryFile('w', suffix="_protein.pdbqt", delete=False) as smina_protein_pdbqt):
         for line in open(pdb_in, encoding='utf-8'):
             if line.startswith("HETATM") and line[17:20] == ligand_id or line.startswith("CONECT"):
                 smina_ligand_pdb.write(line)
@@ -380,10 +409,17 @@ def get_smina_affinity(pdb_in:str, ligand_id:str) -> float:
         smina_protein_pdb.flush()
         smina_protein_pdb.seek(0)
 
-        # TODO convert pdb to pdbqt too to get flexible side chains? In theory MD sorted this out
-        smina_out = subprocess.run(f"{SMINA_BIN} --cpu {os.cpu_count()} --score_only"
-                                   f" -r {smina_protein_pdb.name} -l {smina_ligand_pdb.name}",
-                                   check=True, shell=True, capture_output=True).stdout.decode('ascii')
+        # convert pdb to pdbqt too to get flexible side chains? In theory MD sorts this out
+        if convert_to_pdbqt:
+            cmd = (f"{OBABEL_BIN} {smina_protein_pdb.name} -O {smina_protein_pdbqt.name} && "
+                   f"{GNINA_BIN} --cpu {max(1, os.cpu_count()-1)} --score_only "
+                   f"-r {smina_protein_pdbqt.name} -l {smina_ligand_pdb.name}")
+        else:
+            cmd = (f"{GNINA_BIN} --cpu {max(1, os.cpu_count()-1)} --score_only "
+                   f"-r {smina_protein_pdb.name} -l {smina_ligand_pdb.name}")
+
+        print(cmd)
+        smina_out = subprocess.run(cmd, check=True, shell=True, capture_output=True).stdout.decode('ascii')
 
     affinity = float(re.findall(smina_affinity_pattern, smina_out)[0])
 
@@ -392,15 +428,16 @@ def get_smina_affinity(pdb_in:str, ligand_id:str) -> float:
 
 def extract_pdbs_from_dcd(complex_pdb:str, trajectory_dcd:str) -> dict:
     """
-    Extracts individual PDB structures from a molecular dynamics trajectory (DCD file) and stores them in a dictionary.
+    Extracts individual PDB structures from a molecular dynamics trajectory (DCD file)
+    and stores them in a dictionary.
 
-    This function takes as input a PDB file representing the initial structure of the system, and a DCD file
-    containing the molecular dynamics trajectory. It iterates over the trajectory and writes out individual
-    PDB files for each frame.
+    This function takes as input a PDB file representing the initial structure of the system,
+    and a DCD file containing the molecular dynamics trajectory. It iterates over the trajectory
+    and writes out individual PDB files for each frame.
 
     Parameters:
     complex_pdb : str
-        Path to the initial PDB complex file (output of openmm) representing the structure of the protein + ligand.
+        Path to the initial PDB complex file (output of openmm), the structure of protein + ligand.
 
     trajectory_dcd : str
         Path to the DCD file containing the molecular dynamics trajectory.
@@ -458,6 +495,9 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
 
     out_smina_affinity = open(output_smina_affinity_tsv, 'w', encoding='utf-8')
     out_smina_affinity.write("time_ps\taffinity\n")
+
+    if num_steps is None:
+        num_steps = 1
 
     print(f"Processing {pdb_in} and {mol_in} with {num_steps} steps generating outputs:\n"
           f"- {output_complex_pdb}\n- {output_traj_dcd}\n- {output_minimized_pdb}\n"
@@ -541,8 +581,8 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     print("Minimising ...")
     simulation.minimizeEnergy()
 
-    # Write out the minimised PDB. 
-    # 'enforcePeriodicBox=False' is important otherwise the different components can end up in 
+    # Write out the minimised PDB.
+    # 'enforcePeriodicBox=False' is important otherwise the different components can end up in
     # different periodic boxes resulting in really strange looking output.
     with open(output_minimized_pdb, 'w', encoding='utf-8') as out:
         PDBFile.writeFile(modeller.topology,
@@ -569,12 +609,13 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     # The enforcePeriodicBox arg to the reporters is important.
     # It's a bit counter-intuitive that the value needs to be False, but this is needed to ensure
     # that all parts of the simulation end up in the same periodic box when being output.
-    # optional: simulation.reporters.append(PDBReporter(output_traj_pdb, reporting_interval, 
+    # optional: simulation.reporters.append(PDBReporter(output_traj_pdb, reporting_interval,
     #                                       enforcePeriodicBox=False))
     simulation.reporters.append(DCDReporter(output_traj_dcd, reporting_interval,
                                             enforcePeriodicBox=False))
     simulation.reporters.append(StateDataReporter(output_state_tsv, reporting_interval,
-                                                  step=True, potentialEnergy=True, temperature=True))
+                                                  step=True, potentialEnergy=True,
+                                                  temperature=True))
 
     print(f"Starting simulation with {num_steps} steps ...")
     time_0 = time.time()
@@ -618,7 +659,7 @@ if __name__ == "__main__":
     parser.add_argument("output", type=str, help="Output file name root, including path")
     parser.add_argument("num_steps", type=int, help="Number of simulation steps")
     parser.add_argument("--use_solvent", action='store_true', help="Use solvent?")
-    parser.add_argument("--decoy_smiles", type=str|None, default=None, help="Use a decoy aligned to mol_in for simulation")
+    parser.add_argument("--decoy_smiles", type=str, default=None, help="Use a decoy aligned to mol_in for simulation")
     parser.add_argument("--minimize_only", action='store_true', help="Only perform minimization")
     parser.add_argument("--temperature", type=float, default=300.0, help="Temperature in Kelvin")
     parser.add_argument("--equilibration_steps", type=int, default=200, help="Equilibration steps")
