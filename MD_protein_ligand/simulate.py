@@ -185,10 +185,12 @@ def get_pdb_and_extract_ligand(pdb_id:str,
         pdb_id = Path(pdb_file).stem
     elif use_pdb_redo:
         pdb_file = str(Path(out_dir) / f"{pdb_id}_final.pdb")
-        subprocess.run(f"wget -O {pdb_file} https://pdb-redo.eu/db/{pdb_id}/{pdb_id}_final.pdb", check=True, shell=True, capture_output=True)
+        subprocess.run(f"wget -O {pdb_file} https://pdb-redo.eu/db/{pdb_id}/{pdb_id}_final.pdb",
+                       check=True, shell=True, capture_output=True)
     else:
         pdb_file = str(Path(out_dir) / f"{pdb_id}.pdb")
-        subprocess.run(f"wget -O {pdb_file} https://files.rcsb.org/download/{pdb_id}.pdb", check=True, shell=True, capture_output=True)
+        subprocess.run(f"wget -O {pdb_file} https://files.rcsb.org/download/{pdb_id}.pdb",
+                       check=True, shell=True, capture_output=True)
 
     prepared_pdb_file = str(Path(out_dir) / f"{pdb_id}_fixed.pdb")
     #out_sdf_file = str(Path(out_dir) / f"{pdb_id}_{ligand_id}.sdf")
@@ -203,27 +205,14 @@ def get_pdb_and_extract_ligand(pdb_id:str,
     # _out_pdb_file is just the protein selection (not prepared for openmm)
     _out_pdb_file, out_sdf_files, out_sdf_smileses = extract_ligands.extract_ligands(pdb_file, [ligand_id], [ligand_chain])
 
-    return {"original_pdb": pdb_file, "pdb": prepared_pdb_file, "sdf": out_sdf_files[0], "smi": out_sdf_smileses[0]}
-
-    #with NamedTemporaryFile('w', suffix=".pdb") as out_ligand_pdb:
-    #    for line in open(pdb_file, encoding='utf-8'):
-    #        # include all CONECT lines just in case since some apply to the ligand? (not in pdb-redo files or pdbfixer files)
-    #        if line.startswith("HETATM") and line[17:20] == ligand_id or line.startswith("CONECT"):
-    #            if ligand_chain is None or ligand_chain == line[21]:
-    #                ligand_chain = line[21]
-    #                out_ligand_pdb.write(line)
-#
-    #    out_ligand_pdb.flush()
-    #    out_ligand_pdb.seek(0)
-#
-    #    subprocess.run(f"obabel {out_ligand_pdb.name} -O {out_sdf_file}{' -d' if remove_h_from_ligand else ''}", check=True, shell=True, capture_output=True)
-    #    subprocess.run(f"obabel {out_sdf_file} -osmi -O {out_smi_file}", check=True, shell=True, capture_output=True)
-
-    #return {"original_pdb": pdb_file, "pdb": out_pdb_file, "sdf": out_sdf_file, "smi": out_smi_file}
+    return {"original_pdb": pdb_file, "pdb": prepared_pdb_file,
+            "sdf": out_sdf_files[0], "smi": out_sdf_smileses[0]}
 
 
 def _transform_conformer_to_match_reference(ref_rmol, alt_rmol, ref_conformer_n, alt_conformer_n):
-    """Translate alt_conformer IN PLACE to minimize the RMSD to ref_conformer.
+    """
+    # TODO merge this function into the one below
+    Translate alt_conformer IN PLACE to minimize the RMSD to ref_conformer.
 
     Instead of providing conformers directly, we have to provide a mol and the conformer number.
     """
@@ -236,7 +225,8 @@ def _transform_conformer_to_match_reference(ref_rmol, alt_rmol, ref_conformer_n,
     rdMolTransforms.TransformConformer(alt_rmol.GetConformer(alt_conformer_n), transformation_matrix)
 
     # Return Tanimoto distance between the two conformers
-    shape_dist = rdShapeHelpers.ShapeTanimotoDist(ref_rmol, alt_rmol, confId1=ref_conformer_n, confId2=alt_conformer_n)
+    shape_dist = rdShapeHelpers.ShapeTanimotoDist(ref_rmol, alt_rmol, confId1=ref_conformer_n,
+                                                  confId2=alt_conformer_n)
     return shape_dist
 
 
