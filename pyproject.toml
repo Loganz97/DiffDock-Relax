@@ -4,7 +4,7 @@ version = "2023.08.16"
 description = "MD protein and a ligand"
 
 dependencies = [
-  "mdtraj==1.9.4"
+  "mdtraj==1.9.9"
 ]
 
 [build-system]
