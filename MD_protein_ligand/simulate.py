@@ -28,7 +28,11 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import rdMolTransforms, rdShapeHelpers
 
-import extract_ligands
+# for convenience
+try:
+    from . import extract_ligands
+except ImportError:
+    import extract_ligands
 
 SMINA_BIN = "./bin/smina"
 GNINA_BIN = "./bin/gnina"
