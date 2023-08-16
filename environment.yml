@@ -11,3 +11,5 @@ dependencies:
   - mdtraj=1.9.4
   - plotly=4.9.0
   - python-kaleido=0.0.3
+- pip:
+  - openbabel==3.1.1
