@@ -1,12 +1,14 @@
-#!/usr/bin/env python
-
-# Split a protein-ligand complex into protein and ligands and assign ligand bond orders using SMILES strings from Ligand Export
-# Code requires Python 3.6
+"""
+Adapted from original code from Pat Walters.
+Split a protein-ligand complex into protein and ligands and assign ligand bond
+orders using SMILES strings from Ligand Export.
+"""
 
 from io import StringIO
 import os
 import sys
 from typing import Iterable
+from warnings import warn
 
 import pandas as pd
 from prody import parsePDB, writePDB, writePDBStream
@@ -17,6 +19,7 @@ import requests
 
 LIGAND_EXPO_FILENAME = "Components-smiles-stereo-oe.smi"
 LIGAND_EXPO_URL = f"http://ligand-expo.rcsb.org/dictionaries/{LIGAND_EXPO_FILENAME}"
+
 
 def _read_ligand_expo():
     """
@@ -67,17 +70,16 @@ def _process_ligand(ligand, res_name, expo_dict,
     :return: molecule with bond orders assigned
     """
 
-    # If you include all chains then the SDF includes multiple molecules
-    # and it looks messed up
     if chain is None:
-        print("No chain given, defaulting to chain A. " 
-              "Not specifying a chain can result in multiple molecules combined into one SDF file", file=sys.stderr)
+        warn("No chain suppled for extract_ligands, so defaulting to chain A. "
+             "Not specifying a chain can result in multiple molecules combined into one SDF file! "
+             "If ligand is not in chain A this will fail.")
         chain = "A"
 
     output = StringIO()
     sub_mol = ligand.select(f"resname {res_name} and chain {chain}")
     if sub_mol is None:
-        print(f"sub_mol is None for {res_name}")
+        warn(f"sub_mol is None for {res_name}")
         return None
 
     sub_smiles = expo_dict['SMILES'][res_name]
@@ -90,10 +92,9 @@ def _process_ligand(ligand, res_name, expo_dict,
 
     writePDBStream(output, sub_mol)
     pdb_string = output.getvalue()
-    #print("pdb_string", pdb_string)
+
     rd_mol = AllChem.MolFromPDBBlock(pdb_string)
-    #print("rd_mol", [atom.GetSymbol() for atom in template.GetAtoms()], [atom.GetSymbol() for atom in rd_mol.GetAtoms()])
-    #print("XXX", sub_smiles, template, rd_mol)
+
     new_mol = AllChem.AssignBondOrdersFromTemplate(template, rd_mol)
 
     return new_mol, sub_smiles
