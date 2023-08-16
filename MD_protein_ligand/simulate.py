@@ -479,11 +479,12 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
 
     os.makedirs(Path(output).parent, exist_ok=True)
     output_complex_pdb = f"{output}_complex.pdb"
-    output_traj_dcd = f"{output}_traj.dcd"
     output_minimized_pdb = f"{output}_minimised.pdb"
-    output_state_tsv = f"{output}_state.tsv"
-    output_analysis_tsv = f"{output}_analysis.tsv"
     output_smina_affinity_tsv = f"{output}_smina_affinity.tsv"
+    if minimize_only is not True:
+        output_traj_dcd = f"{output}_traj.dcd"
+        output_state_tsv = f"{output}_state.tsv"
+        output_analysis_tsv = f"{output}_analysis.tsv"
     output_args_json = f"{output}_args.json"
     json.dump(locals(), open(output_args_json, 'w', encoding='utf-8'), indent=2)
 
@@ -493,9 +494,7 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     if num_steps is None:
         num_steps = 1
 
-    print(f"Processing {pdb_in} and {mol_in} with {num_steps} steps generating outputs:\n"
-          f"- {output_complex_pdb}\n- {output_traj_dcd}\n- {output_minimized_pdb}\n"
-          f"- {output_state_tsv}\n- {output_analysis_tsv}\n- {output_smina_affinity_tsv}\n- {output_args_json}\n")
+    print(f"Processing {pdb_in} and {mol_in} with {num_steps} steps")
 
     # -------------------------------------------------------
     # Set up system
