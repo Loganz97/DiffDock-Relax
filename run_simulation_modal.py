@@ -1,5 +1,3 @@
-import glob
-from subprocess import run
 from pathlib import Path
 
 from modal import Image, Mount, Stub
@@ -19,32 +17,31 @@ image = (Image
 
 @stub.function(image=image, gpu="T4", timeout=60*15,
                mounts=[Mount.from_local_dir((Path(".") / "input"), remote_path="/input")])
-def MD_test(pdb_id, ligand_id):
-    """test MD"""
+def minimize_pdb_containing_ligand(pdb_id:str, ligand_id:str):
+    """test MD simulation"""
 
     from MD_protein_ligand import simulate
-    print("import success")
 
-    #
-    # Example 1, a PDB file containing a ligand, minimize only!
-    #
-    #pdb_id, ligand_id = "6GRA", "F8Z"
-
-    # Produces {"pdb": `out/../{pdb_id}_fixed.pdb`, "sdf": `out/../{pdb_id}_{sdf_id}.sdf`}
     prepared_files = simulate.get_pdb_and_extract_ligand(pdb_id, ligand_id,
                                                          out_dir=f"out/{pdb_id}_{ligand_id}",
                                                          use_pdb_redo=False)
 
     sim_files = simulate.simulate(prepared_files["pdb"], prepared_files["sdf"],
-                                  f"out/{pdb_id}_{ligand_id}/{pdb_id}_{ligand_id}", 10_000,
+                                  f"out/{pdb_id}_{ligand_id}/{pdb_id}_{ligand_id}", None,
                                   use_solvent=False, decoy_smiles=None, minimize_only=True,
                                   temperature=300, equilibration_steps=200)
-    print(sim_files)
-    for sim_file_name, sim_file in sim_files.items():
-        print(f">>> {sim_file_name}")
-        print(open(sim_file, 'r', encoding='utf8').read())
-        print("<<<")
+
+    # read in the output files
+    return {out_name: (fname, open(fname, 'rb').read() if Path(fname).exists() else None)
+            for out_name, fname in (prepared_files | sim_files).items()}
 
 @stub.local_entrypoint()
-def main():
-    MD_test.call("6GRA", "F8Z")
+def main(pdb_id:str, ligand_id:str):
+    outputs = minimize_pdb_containing_ligand.call(pdb_id, ligand_id)
+
+    for _, (out_file, out_content) in outputs.items():
+        if out_content:
+            Path(out_file).parent.mkdir(parents=True, exist_ok=True)
+            open(out_file, 'wb').write(out_content)
+
+    print({k:v[0] for k, v in outputs.items()})
