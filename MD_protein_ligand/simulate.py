@@ -34,9 +34,11 @@ try:
 except ImportError:
     import extract_ligands
 
-SMINA_BIN = "./bin/smina"
-GNINA_BIN = "./bin/gnina"
-OBABEL_BIN = "obabel"
+SMINA, SMINA_BIN = "smina", "./bin/smina"
+GNINA, GNINA_BIN = "gnina", "./bin/gnina"
+OBABEL, OBABEL_BIN = "obabel", "obabel"
+binaries = {SMINA: SMINA_BIN, GNINA: GNINA_BIN, OBABEL: OBABEL_BIN}
+SMINA_LINUX_URL = "https://sourceforge.net/projects/smina/files/smina.static/download"
 GNINA_LINUX_URL = "https://github.com/gnina/gnina/releases/download/v1.0.3/gnina"
 
 PDB_PH = 7.4
@@ -57,22 +59,27 @@ FORCEFIELD_SMALL_MOLECULE = "gaff-2.11"
 OPENMM_DEFAULT_LIGAND_ID = "UNK"
 
 
-def download_gnina_if_missing():
-    """download gnina binary"""
-    if not Path(GNINA_BIN).exists():
-        print("Downloading necessary gnina binary (~300Mb)")
-        with requests.get(GNINA_LINUX_URL, timeout=600, stream=True) as r:
+def _download_binary_if_missing(binary_name:str):
+    def _download(path, url):
+        """download binary"""
+        print(f"Downloading necessary {binary_name} binary (300Mb for gnina)")
+        with requests.get(url, timeout=600, stream=True) as r:
             r.raise_for_status()
-            os.makedirs(Path(GNINA_BIN).parent, exist_ok=True)
-            with open(GNINA_BIN, 'wb') as f:
+            os.makedirs(Path(path).parent, exist_ok=True)
+            with open(path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
                     f.write(chunk)
-            os.chmod(GNINA_BIN, 0o755)
-        print("Downloaded gnina binary")
-    return True
+        os.chmod(path, 0o755)
+        print(f"Downloaded {binary_name} binary\n")
+        return True
 
+    if binary_name == SMINA and not Path(SMINA_BIN).exists():
+        _download(SMINA_BIN, SMINA_LINUX_URL)
+    elif binary_name == GNINA and not Path(GNINA_BIN).exists():
+        _download(GNINA_BIN, GNINA_LINUX_URL)
 
-download_gnina_if_missing()
+_download_binary_if_missing(SMINA)
+_download_binary_if_missing(GNINA)
 
 
 def get_platform():
@@ -88,13 +95,15 @@ def get_platform():
     return platform
 
 
-def prepare_protein(in_pdb_file:str, out_pdb_file:str, minimize_pdb:bool=False) -> bool:
+def prepare_protein(in_pdb_file:str, out_pdb_file:str, minimize_pdb:bool=False,
+                    mutation:tuple|None=None) -> bool:
     """
     Prepare a protein for simulation using pdbfixer and optionally minimize it using openmm.
 
-    This function fixes common issues in PDB files and prepares them for simulation. It identifies missing residues,
-    atoms, non-standard residues and heterogens, then fixes these issues. It also adds missing hydrogens according to
-    the specified pH value. If the 'minimize_pdb' flag is set, the function additionally minimizes the energy of the
+    This function fixes common issues in PDB files and prepares them for simulation.
+    It identifies missing residues, atoms, non-standard residues and heterogens, then fixes these issues.
+    It also adds missing hydrogens according to the specified pH value.
+    If the 'minimize_pdb' flag is set, the function additionally minimizes the energy of the
     system using a Langevin integrator.
 
     Parameters:
@@ -103,7 +112,8 @@ def prepare_protein(in_pdb_file:str, out_pdb_file:str, minimize_pdb:bool=False) 
     minimize_pdb (bool, optional): A flag indicating whether to minimize the PDB file using openmm.
         If it's a crystal from PDB, then you would not want to minimize it.
         If it's a docked pose, then you may want to minimize it. Defaults to False.
-
+    mutation (tuple, optional): A mutation to apply to the protein. Defaults to None.
+        Format is (from_aa, resn, to_aa, chains).
     Returns:
     bool: True if the function executes successfully, raises an exception otherwise.
 
@@ -112,11 +122,14 @@ def prepare_protein(in_pdb_file:str, out_pdb_file:str, minimize_pdb:bool=False) 
     """
 
     fixer = PDBFixer(filename=in_pdb_file)
+    if mutation is not None:
+        for chain in mutation[3]:
+            fixer.applyMutations([f"{mutation[0]}-{mutation[1]}-{mutation[2]}"], chain)
     fixer.findMissingResidues()
     fixer.findMissingAtoms()
     fixer.findNonstandardResidues()
 
-    print(f"Prepare protein:\n"
+    print(f"# Preparing protein:\n"
           f"- Missing residues: {fixer.missingResidues}\n"
           f"- Atoms: {fixer.missingAtoms}\n"
           f"- Terminals: {fixer.missingTerminals}\n"
@@ -158,7 +171,8 @@ def get_pdb_and_extract_ligand(pdb_id:str,
                                ligand_chain:str|None=None,
                                out_dir:str='.',
                                use_pdb_redo:bool=False,
-                               minimize_pdb:bool=False) -> dict:
+                               minimize_pdb:bool=False,
+                               mutation:tuple|None=None) -> dict:
     """
     Download a PDB file, prepare it for MD, and extract a ligand.
 
@@ -178,7 +192,7 @@ def get_pdb_and_extract_ligand(pdb_id:str,
     filename_dict (dict): a dict of the files produced
     """
 
-    os.makedirs(out_dir, exist_ok=True)
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
 
     if pdb_id.endswith(".pdb"):
         pdb_file = pdb_id
@@ -193,11 +207,9 @@ def get_pdb_and_extract_ligand(pdb_id:str,
                        check=True, shell=True, capture_output=True)
 
     prepared_pdb_file = str(Path(out_dir) / f"{pdb_id}_fixed.pdb")
-    #out_sdf_file = str(Path(out_dir) / f"{pdb_id}_{ligand_id}.sdf")
-    #out_smi_file = str(Path(out_dir) / f"{pdb_id}_{ligand_id}.smi")
 
     # FIXFIX is it ok to prepare_protein BEFORE extracting the ligand?
-    prepare_protein(pdb_file, prepared_pdb_file, minimize_pdb=minimize_pdb)
+    prepare_protein(pdb_file, prepared_pdb_file, minimize_pdb=minimize_pdb, mutation=mutation)
 
     if ligand_id is None: # then extract nothing, just prepare the protein
         return {"original_pdb": pdb_file, "pdb": prepared_pdb_file}
@@ -371,7 +383,8 @@ def analyze_traj(traj_in: str, topol_in:str, output_traj_analysis:str) -> pd.Dat
     return df_traj
 
 
-def get_smina_affinity(pdb_in:str, ligand_id:str, convert_to_pdbqt:bool=False) -> float:
+def get_smina_affinity(pdb_in:str, ligand_id:str, convert_to_pdbqt:bool=False,
+                       scoring_tool:str=GNINA) -> float:
     """
     Calculates the predicted binding affinity of a molecule to a protein using smina.
     The lower the binding affinity, the stronger the expected binding.
@@ -384,12 +397,13 @@ def get_smina_affinity(pdb_in:str, ligand_id:str, convert_to_pdbqt:bool=False) -
     ligand_id (str): The id of the ligand within the PDB file.
     convert_to_pdbqt (bool): If True, convert the PDB file to PDBQT format before running smina.
         Defaults to False.
+    scoring_tool (str): Pose scoring tool to use. Can be 'smina' or 'gnina'. Defaults to 'gnina'.
 
     Returns:
     float: The predicted binding affinity of the ligand to the protein.
     """
     smina_affinity_pattern = r"Affinity:\s*([\-\.\d+]+)"
-    print("pdb_in", pdb_in)
+
     with (NamedTemporaryFile('w', suffix="_ligand.pdb", delete=False) as smina_ligand_pdb,
           NamedTemporaryFile('w', suffix="_protein.pdb", delete=False) as smina_protein_pdb,
           NamedTemporaryFile('w', suffix="_protein.pdbqt", delete=False) as smina_protein_pdbqt):
@@ -405,14 +419,14 @@ def get_smina_affinity(pdb_in:str, ligand_id:str, convert_to_pdbqt:bool=False) -
 
         # convert pdb to pdbqt too to get flexible side chains? In theory MD sorts this out
         if convert_to_pdbqt:
-            cmd = (f"{OBABEL_BIN} {smina_protein_pdb.name} -O {smina_protein_pdbqt.name} && "
-                   f"{GNINA_BIN} --cpu {max(1, os.cpu_count()-1)} --score_only "
+            cmd = (f"{binaries[OBABEL]} {smina_protein_pdb.name} -O {smina_protein_pdbqt.name} && "
+                   f"{binaries[scoring_tool]} --cpu {max(1, os.cpu_count()-1)} --score_only "
                    f"-r {smina_protein_pdbqt.name} -l {smina_ligand_pdb.name}")
         else:
-            cmd = (f"{GNINA_BIN} --cpu {max(1, os.cpu_count()-1)} --score_only "
+            cmd = (f"{binaries[scoring_tool]} --cpu {max(1, os.cpu_count()-1)} --score_only "
                    f"-r {smina_protein_pdb.name} -l {smina_ligand_pdb.name}")
 
-        print(cmd)
+        print(f"# Calculating score: {cmd}\n")
         smina_out = subprocess.run(cmd, check=True, shell=True, capture_output=True).stdout.decode('ascii')
 
     affinity = float(re.findall(smina_affinity_pattern, smina_out)[0])
@@ -455,12 +469,15 @@ def extract_pdbs_from_dcd(complex_pdb:str, trajectory_dcd:str) -> dict:
 def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
              use_solvent:bool=False, decoy_smiles:str|None=None, minimize_only:bool=False,
              temperature:float=PDB_TEMPERATURE,
-             equilibration_steps:int=200, reporting_interval:int|None=None) -> dict:
+             equilibration_steps:int=200, reporting_interval:int|None=None,
+             scoring_tool:str=GNINA) -> dict:
     """
     Run a molecular dynamics simulation using OpenMM.
 
-    This function simulates the interactions between a protein (from a PDB file) and a ligand (from a MOL/SDF file).
-    The simulation can be performed in vacuum or in solvent. The simulation outputs are saved in several file formats.
+    This function simulates the interactions between a protein (from a PDB file)
+    and a ligand (from a MOL/SDF file).
+    The simulation can be performed in vacuum or in solvent.
+    The simulation outputs are saved in several file formats.
 
     Parameters:
     pdb_in (str): Path to the input PDB file containing the protein structure.
@@ -506,25 +523,25 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
 
     platform = get_platform()
 
-    print(f"Preparing ligand:\n- {mol_in}")
+    print(f"# Preparing ligand:\n- {mol_in}\n")
     ligand_rmol, ligand_mol = prepare_ligand_for_MD(mol_in)
     ligand_conformer = ligand_mol.conformers[0]
     assert len(ligand_mol.conformers) == len(ligand_rmol.GetConformers()) == 1, "reference ligand should have one conformer"
 
     if decoy_smiles is not None:
         ligand_rmol, ligand_mol, ligand_conformer = make_decoy(ligand_rmol, decoy_smiles)
-        print(f"Using decoy:\n- {ligand_mol}\n- {ligand_conformer}")
+        print(f"# Using decoy:\n- {ligand_mol}\n- {ligand_conformer}\n")
 
     # Initialize a SystemGenerator using the GAFF for the ligand and tip3p for the water.
     # Chat-GPT: To use a larger time step, artificially increase the mass of the hydrogens.
-    print("Preparing system")
+    print("# Preparing system")
     system_generator = prepare_system_generator(ligand_mol, use_solvent)
 
     # Use Modeller to combine the protein and ligand into a complex
-    print("Reading protein")
+    print("# Reading protein")
     protein_pdb = PDBFile(pdb_in)
 
-    print("Preparing complex")
+    print("# Preparing complex")
     modeller = Modeller(protein_pdb.topology, protein_pdb.positions)
     print(f"- System has {modeller.topology.getNumAtoms()} atoms after adding protein")
 
@@ -549,7 +566,7 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     with open(output_complex_pdb, 'w', encoding='utf-8') as out:
         PDBFile.writeFile(modeller.topology, modeller.positions, out)
 
-    smina_affinity = get_smina_affinity(output_complex_pdb, OPENMM_DEFAULT_LIGAND_ID)
+    smina_affinity = get_smina_affinity(output_complex_pdb, OPENMM_DEFAULT_LIGAND_ID, scoring_tool=scoring_tool)
     out_smina_affinity.write(f"complex\t{smina_affinity:.4f}\n")
 
     # Create the system using the SystemGenerator
@@ -561,8 +578,8 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     if use_solvent:
         system.addForce(MonteCarloBarostat(BAROSTAT_PRESSURE, temperature, BAROSTAT_FREQUENCY))
 
-    print(f"- Uses Periodic box: {system.usesPeriodicBoundaryConditions()}\n"
-          f"- Default Periodic box: {system.getDefaultPeriodicBoxVectors()}")
+    print(f"- Using Periodic box: {system.usesPeriodicBoundaryConditions()}\n"
+          f"- Default Periodic box: {system.getDefaultPeriodicBoxVectors()}\n")
 
     # -------------------------------------------------------
     # Run simulation
@@ -571,7 +588,7 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     context = simulation.context
     context.setPositions(modeller.positions)
 
-    print("Minimising ...")
+    print("# Minimising ...")
     simulation.minimizeEnergy()
 
     # Write out the minimised PDB.
@@ -583,7 +600,7 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
                           file=out,
                           keepIds=True)
 
-    smina_affinity = get_smina_affinity(output_minimized_pdb, OPENMM_DEFAULT_LIGAND_ID)
+    smina_affinity = get_smina_affinity(output_minimized_pdb, OPENMM_DEFAULT_LIGAND_ID, scoring_tool=scoring_tool)
     out_smina_affinity.write(f"min\t{smina_affinity:.4f}\n")
     out_smina_affinity.flush()
 
@@ -621,7 +638,8 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     #
     print("Calculating affinities along trajectory...")
     traj_pdbs = extract_pdbs_from_dcd(output_complex_pdb, output_traj_dcd)
-    traj_affinities = {time_ps: get_smina_affinity(traj_pdb, OPENMM_DEFAULT_LIGAND_ID) for time_ps, traj_pdb in traj_pdbs.items()}
+    traj_affinities = {time_ps: get_smina_affinity(traj_pdb, OPENMM_DEFAULT_LIGAND_ID, scoring_tool=scoring_tool)
+                       for time_ps, traj_pdb in traj_pdbs.items()}
     for time_ps, smina_affinity in traj_affinities.items():
         out_smina_affinity.write(f"{time_ps:.2f}\t{smina_affinity:.4f}\n")
 
