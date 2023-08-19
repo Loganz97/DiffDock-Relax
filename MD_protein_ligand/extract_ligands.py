@@ -83,7 +83,6 @@ def _process_ligand(ligand, res_name, expo_dict,
         return None
 
     sub_smiles = expo_dict['SMILES'][res_name]
-    print("smiles?", sub_smiles, file=sys.stderr)
 
     template = AllChem.MolFromSmiles(sub_smiles)
     if template is None:

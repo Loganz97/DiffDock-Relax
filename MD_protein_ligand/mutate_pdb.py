@@ -72,7 +72,6 @@ def mutate_pdb(pdb_file:str, chains:str, res_num:int, aa:str, check_original_aa:
         if rotamer is not None:
             cmd.frame(rotamer)
 
-        print("test if it fails here", chain, res_num, original_aa, aa_3, rotamer)
         cmd.get_wizard().apply()
 
 
