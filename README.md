@@ -37,7 +37,7 @@ prepared_files = simulate.get_pdb_and_extract_ligand(pdb_id, ligand_id,
 sim_files = simulate.simulate(prepared_files["pdb"], prepared_files["sdf"],
                               f"out/{pdb_id}_{ligand_id}/{pdb_id}_{ligand_id}", None,
                               use_solvent=False, decoy_smiles=None, minimize_only=True,
-                              temperature=300, equilibration_steps=200)
+                              temperature=310, equilibration_steps=200)
 print(sim_files)
 ```
 
@@ -63,7 +63,7 @@ prepared_files = simulate.get_pdb_and_extract_ligand(pdb_id, ligand_id,
 sim_files = simulate.simulate(prepared_files["pdb"], prepared_files["sdf"],
                               f"out/{pdb_id}_{ligand_id}/{pdb_id}_{ligand_id}", 10_000,
                               use_solvent=False, decoy_smiles=None, minimize_only=False,
-                              temperature=300, equilibration_steps=200)
+                              temperature=310, equilibration_steps=200)
 print(sim_files)
 ```
 
