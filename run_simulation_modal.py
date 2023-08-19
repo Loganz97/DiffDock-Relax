@@ -43,16 +43,16 @@ def simulate_md_ligand(pdb_id:str, ligand_id:str, use_pdb_redo:bool,
 @stub.local_entrypoint()
 def main(pdb_id:str, ligand_id:str, use_pdb_redo:bool=False,
          num_steps:int=None,
-         use_solvent:bool=False, decoy_smiles=None,
+         use_solvent:bool=False, decoy_smiles:str|None=None, mutation:str|None=None,
          temperature:int=300, equilibration_steps:int=200, out_dir_root:str="out"):
     """MD simulation of protein + ligand"""
 
     minimize_only = True if num_steps is None else False
 
-    outputs = simulate_md_ligand.call(pdb_id, ligand_id, use_pdb_redo,
-                                      num_steps, minimize_only,
-                                      use_solvent, decoy_smiles, 
-                                      temperature, equilibration_steps, out_dir_root)
+    outputs = simulate_md_ligand.call(pdb_id, ligand_id,
+                                      use_pdb_redo, num_steps, minimize_only,
+                                      use_solvent, decoy_smiles, temperature,
+                                      equilibration_steps, out_dir_root)
 
     for _, (out_file, out_content) in outputs.items():
         if out_content:
