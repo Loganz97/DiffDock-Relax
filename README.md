@@ -75,7 +75,7 @@ print(sim_files)
 
 ## Example 3, a PDB file and a separate (docked) SDF file, minimize only
 
-First run the [DiffDock colab](https://colab.research.google.com/drive/1CTtUGg05-2MtlWmfJhqzLTtkDDaxCDOQ)
+First run the [DiffDock colab](https://colab.research.google.com/github/hgbrian/biocolabs/blob/master/DiffDock.ipynb)
 with input
 - pdb_id = "4O75"
 - smiles = "Fc1cnc(nc1Nc2nc3N(C(=O)C(Oc3cc2)(C)C)COP(=O)(O)O)Nc4cc(OC)c(OC)c(OC)c4"
