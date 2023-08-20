@@ -1,9 +1,15 @@
 # Run protein-ligand MD simulation
 
+### colab
+<a target="_blank" href="https://colab.research.google.com/github/hgbrian/biocolabs/blob/master/MD_protein_ligand.ipynb">
+  <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
+</a>
+
 This tool is for running an MD simulation of a protein and a ligand.
 It is based off of [simple-simulate-complex](https://github.com/tdudgeon/simple-simulate-complex)
 which did most of the hard work of
 getting expert input on figuring out reasonable parameters.
+
 
 See the
 [simple-simulate-complex README](https://github.com/tdudgeon/simple-simulate-complex/blob/master/README.md)
