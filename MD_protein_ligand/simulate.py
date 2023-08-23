@@ -558,7 +558,6 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     if use_solvent:
         # We use the 'padding' option to define the periodic box. The PDB file does not contain any
         # unit cell information so we just create a box that has a 10A padding around the complex.
-        print("Adding solvent...")
         modeller.addSolvent(system_generator.forcefield, model='tip3p', padding=SOLVENT_PADDING)
         print(f"- System has {modeller.topology.getNumAtoms()} atoms after adding solvent")
 
@@ -611,7 +610,7 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
                 "args_json": output_args_json
                 }
 
-    print("Equilibrating ...")
+    print("## Equilibrating ...")
     context.setVelocitiesToTemperature(temperature)
     simulation.step(equilibration_steps)
 
