@@ -28,11 +28,11 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import rdMolTransforms, rdShapeHelpers
 
-# for convenience
+# for convenience so I can use as a script or a module
 try:
-    from . import extract_ligands
+    from .extract_ligands import extract_ligands
 except ImportError:
-    import extract_ligands
+    from extract_ligands import extract_ligands
 
 SMINA, SMINA_BIN = "smina", "./bin/smina"
 GNINA, GNINA_BIN = "gnina", "./bin/gnina"
@@ -44,7 +44,7 @@ GNINA_LINUX_URL = "https://github.com/gnina/gnina/releases/download/v1.0.3/gnina
 PDB_PH = 7.4
 PDB_TEMPERATURE = 300 * unit.kelvin
 FRICTION_COEFF = 1.0 / unit.picosecond
-STEP_SIZE = 0.002 * unit.picoseconds
+STEP_SIZE = 0.002 * unit.picosecond
 SOLVENT_PADDING = 10.0 * unit.angstroms
 BAROSTAT_PRESSURE = 1.0 * unit.atmospheres
 BAROSTAT_FREQUENCY = 25
@@ -157,7 +157,8 @@ def prepare_protein(in_pdb_file:str, out_pdb_file:str, minimize_pdb:bool=False,
         simulation.context.setPositions(fixer.positions)
         simulation.minimizeEnergy()
 
-        with open(f"{Path(out_pdb_file).parent} / {Path(out_pdb_file).stem}_minimized.pdb", 'w', encoding='utf-8') as out:
+        with open(f"{Path(out_pdb_file).parent} / {Path(out_pdb_file).stem}_minimized.pdb", 'w',
+                  encoding='utf-8') as out:
             PDBFile.writeFile(fixer.topology,
                               simulation.context.getState(getPositions=True, enforcePeriodicBox=False).getPositions(),
                               file=out,
@@ -177,14 +178,14 @@ def get_pdb_and_extract_ligand(pdb_id:str,
     Download a PDB file, prepare it for MD, and extract a ligand.
 
     This function downloads a PDB file, prepares it to a {pdb_id}_fixed.pdb file,
-    then extracts one ligand and saves it as {pdb_id}_{ligand_id}.sdf and {pdb_id}_{ligand_id}.smi files.
+    then extracts one ligand and saves it as {pdb_id}_{ligand_id}.sdf and {pdb_id}_{ligand_id}.smi
 
     Parameters:
     pdb_id (str): The 4-letter PDB ID.
     ligand_id (str): The 3-letter ligand ID.
     ligand_chain (str): If you want to specify the chain of the ligand. Defaults to None.
     out_dir (str): The output directory. Defaults to '.'.
-    use_pdb_redo (bool): If True, use pdb_redo to download PDB file, resulting in a {pdb_id}_final.pdb file. Defaults to False.
+    use_pdb_redo (bool): If True, use get pdb_redo PDB ({pdb_id}_pdbredo.pdb). Defaults to False.
     minimize_pdb (bool): If True, minimize the PDB file. Defaults to False.
     remove_H_from_ligand (bool): If True, remove hydrogens from the ligand. Defaults to True.
 
@@ -198,8 +199,8 @@ def get_pdb_and_extract_ligand(pdb_id:str,
         pdb_file = pdb_id
         pdb_id = Path(pdb_file).stem
     elif use_pdb_redo:
-        pdb_file = str(Path(out_dir) / f"{pdb_id}_final.pdb")
-        subprocess.run(f"wget -O {pdb_file} https://pdb-redo.eu/db/{pdb_id}/{pdb_id}_final.pdb",
+        pdb_file = str(Path(out_dir) / f"{pdb_id}_pdbredo.pdb")
+        subprocess.run(f"wget -O {pdb_file} https://pdb-redo.eu/db/{pdb_id}/{pdb_id}_pdbredo.pdb",
                        check=True, shell=True, capture_output=True)
     else:
         pdb_file = str(Path(out_dir) / f"{pdb_id}.pdb")
@@ -215,7 +216,7 @@ def get_pdb_and_extract_ligand(pdb_id:str,
         return {"original_pdb": pdb_file, "pdb": prepared_pdb_file}
 
     # _out_pdb_file is just the protein selection (not prepared for openmm)
-    _out_pdb_file, out_sdf_files, out_sdf_smileses = extract_ligands.extract_ligands(pdb_file, [ligand_id], [ligand_chain])
+    _, out_sdf_files, out_sdf_smileses = extract_ligands(pdb_file, [ligand_id], [ligand_chain])
 
     return {"original_pdb": pdb_file, "pdb": prepared_pdb_file,
             "sdf": out_sdf_files[0], "smi": out_sdf_smileses[0]}
@@ -245,8 +246,8 @@ def _transform_conformer_to_match_reference(ref_rmol, alt_rmol, ref_conformer_n,
 def make_decoy(reference_rmol, decoy_smiles, num_conformers = 100):
     """
     Given a reference (rdkit) molecule and a decoy SMILES,
-    generate a decoy molecule (both rdkit and openff) and its closest conformer to the reference molecule
-    in terms of Tanimoto shape distance.
+    generate a decoy molecule (both rdkit and openff) and its closest conformer
+    to the reference molecule in terms of Tanimoto shape distance.
     """
 
     # Convert SMILES to 3D structure
@@ -254,7 +255,7 @@ def make_decoy(reference_rmol, decoy_smiles, num_conformers = 100):
     decoy_rmol = Chem.AddHs(decoy_rmol)
 
     # Generate conformers
-    #AllChem.EmbedMolecule(decoy_rmol) # I am pretty sure this is unnecessary given EmbedMultipleConfs
+    #AllChem.EmbedMolecule(decoy_rmol) # pretty sure this is unnecessary given EmbedMultipleConfs
     AllChem.EmbedMultipleConfs(decoy_rmol, numConfs=num_conformers)
 
     # TODO replace below with _transform_conformer_to_match_reference
@@ -297,7 +298,7 @@ def prepare_ligand_for_MD(mol_filename:str, is_sanitize:bool=True):
     Returns:
     tuple: A tuple containing:
         - rdkit.Chem.rdchem.Mol: The RDKit molecule object with Hydrogens added.
-        - openff.toolkit.topology.Molecule: The openforcefield Molecule object created from the RDKit molecule.
+        - openff.toolkit.topology.Molecule: The openforcefield Molecule object created from RDKit molecule.
     """
     ligand_rmol = Chem.MolFromMolFile(mol_filename, sanitize=is_sanitize)
     ligand_rmol = Chem.AddHs(ligand_rmol, addCoords=True)
@@ -311,7 +312,7 @@ def prepare_system_generator(ligand_mol=None, use_solvent=False):
     """
     Prepare a system generator object for MD simulation.
 
-    This function initializes a SystemGenerator object either with or without solvent, 
+    This function initializes a SystemGenerator object either with or without solvent,
     depending on the 'use_solvent' flag. The forcefield for the small molecule is always set to 'gaff-2.11'.
 
     Parameters:
@@ -383,8 +384,8 @@ def analyze_traj(traj_in: str, topol_in:str, output_traj_analysis:str) -> pd.Dat
     return df_traj
 
 
-def get_smina_affinity(pdb_in:str, ligand_id:str, convert_to_pdbqt:bool=False,
-                       scoring_tool:str=GNINA) -> float:
+def get_affinity(pdb_in:str, ligand_id:str, convert_to_pdbqt:bool=False,
+                 scoring_tool:str=GNINA) -> float:
     """
     Calculates the predicted binding affinity of a molecule to a protein using smina.
     The lower the binding affinity, the stronger the expected binding.
@@ -497,7 +498,7 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     os.makedirs(Path(output).parent, exist_ok=True)
     output_complex_pdb = f"{output}_complex.pdb"
     output_minimized_pdb = f"{output}_minimised.pdb"
-    output_smina_affinity_tsv = f"{output}_smina_affinity.tsv"
+    output_affinity_tsv = f"{output}_affinity.tsv"
     if minimize_only is not True:
         output_traj_dcd = f"{output}_traj.dcd"
         output_state_tsv = f"{output}_state.tsv"
@@ -505,8 +506,8 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     output_args_json = f"{output}_args.json"
     json.dump(locals(), open(output_args_json, 'w', encoding='utf-8'), indent=2)
 
-    out_smina_affinity = open(output_smina_affinity_tsv, 'w', encoding='utf-8')
-    out_smina_affinity.write("time_ps\taffinity\n")
+    out_affinity = open(output_affinity_tsv, 'w', encoding='utf-8')
+    out_affinity.write("time_ps\taffinity\n")
 
     if num_steps is None:
         num_steps = 1
@@ -550,7 +551,7 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     # these from an openforcefield Molecule object that was created from a RDKit molecule.
     # The topology part is described in the openforcefield API but the positions part grabs the first
     # (and only) conformer and passes it to Modeller. It works. Don't ask why!
-    # modeller.topology.setPeriodicBoxVectors([Vec3(x=8.461, y=0.0, z=0.0), 
+    # modeller.topology.setPeriodicBoxVectors([Vec3(x=8.461, y=0.0, z=0.0),
     # Vec3(x=0.0, y=8.461, z=0.0), Vec3(x=0.0, y=0.0, z=8.461)])
     modeller.add(ligand_mol.to_topology().to_openmm(), ligand_mol.conformers[0].to_openmm())
     print(f"- System has {modeller.topology.getNumAtoms()} atoms after adding ligand")
@@ -565,8 +566,8 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     with open(output_complex_pdb, 'w', encoding='utf-8') as out:
         PDBFile.writeFile(modeller.topology, modeller.positions, out)
 
-    smina_affinity = get_smina_affinity(output_complex_pdb, OPENMM_DEFAULT_LIGAND_ID, scoring_tool=scoring_tool)
-    out_smina_affinity.write(f"complex\t{smina_affinity:.4f}\n")
+    affinity = get_affinity(output_complex_pdb, OPENMM_DEFAULT_LIGAND_ID, scoring_tool=scoring_tool)
+    out_affinity.write(f"complex\t{affinity:.4f}\n")
 
     # Create the system using the SystemGenerator
     system = system_generator.create_system(modeller.topology, molecules=ligand_mol)
@@ -599,14 +600,14 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
                           file=out,
                           keepIds=True)
 
-    smina_affinity = get_smina_affinity(output_minimized_pdb, OPENMM_DEFAULT_LIGAND_ID, scoring_tool=scoring_tool)
-    out_smina_affinity.write(f"min\t{smina_affinity:.4f}\n")
-    out_smina_affinity.flush()
+    affinity = get_affinity(output_minimized_pdb, OPENMM_DEFAULT_LIGAND_ID, scoring_tool=scoring_tool)
+    out_affinity.write(f"min\t{affinity:.4f}\n")
+    out_affinity.flush()
 
     if minimize_only:
         return {"complex_pdb": output_complex_pdb,
                 "minimized_pdb": output_minimized_pdb,
-                "smina_affinity_tsv": output_smina_affinity_tsv,
+                "affinity_tsv": output_affinity_tsv,
                 "args_json": output_args_json
                 }
 
@@ -637,10 +638,10 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     #
     print("Calculating affinities along trajectory...")
     traj_pdbs = extract_pdbs_from_dcd(output_complex_pdb, output_traj_dcd)
-    traj_affinities = {time_ps: get_smina_affinity(traj_pdb, OPENMM_DEFAULT_LIGAND_ID, scoring_tool=scoring_tool)
+    traj_affinities = {time_ps: get_affinity(traj_pdb, OPENMM_DEFAULT_LIGAND_ID, scoring_tool=scoring_tool)
                        for time_ps, traj_pdb in traj_pdbs.items()}
-    for time_ps, smina_affinity in traj_affinities.items():
-        out_smina_affinity.write(f"{time_ps:.2f}\t{smina_affinity:.4f}\n")
+    for time_ps, affinity in traj_affinities.items():
+        out_affinity.write(f"{time_ps:.2f}\t{affinity:.4f}\n")
 
     print("Running trajectory analysis...")
     _ = analyze_traj(output_traj_dcd, output_complex_pdb, output_analysis_tsv)
@@ -653,7 +654,7 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     return {"complex_pdb": output_complex_pdb,
             "traj_dcd": output_traj_dcd,
             "minimized_pdb": output_minimized_pdb,
-            "smina_affinity_tsv": output_smina_affinity_tsv,
+            "affinity_tsv": output_affinity_tsv,
             "args_json": output_args_json,
             "state_tsv": output_state_tsv,
             "analysis_tsv": output_analysis_tsv,
