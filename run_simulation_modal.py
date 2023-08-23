@@ -1,4 +1,5 @@
 from pathlib import Path
+from shutil import copy
 
 from modal import Image, Mount, Stub
 
@@ -18,22 +19,36 @@ image = (Image
 
 @stub.function(image=image, gpu="T4", timeout=60*15,
                mounts=[Mount.from_local_dir((Path(".") / "input"), remote_path="/input")])
-def simulate_md_ligand(pdb_id:str, ligand_id:str, use_pdb_redo:bool,
-                       num_steps:int|None, minimize_only:bool,
-                       use_solvent:bool, decoy_smiles:str|None,
+def simulate_md_ligand(pdb_id:str, ligand_id:str, ligand_chain:str,
+                       use_pdb_redo:bool, num_steps:int|None, minimize_only:bool,
+                       use_solvent:bool, decoy_smiles:str|None, mutation:str|None,
                        temperature:int, equilibration_steps:int, out_dir_root:str):
     """MD simulation of protein + ligand"""
 
     from MD_protein_ligand import simulate
+    out_dir = f"{out_dir_root}/{pdb_id}_{ligand_id}"
+    out_stem = f"{out_dir}/{pdb_id}_{ligand_id}"
 
-    prepared_files = simulate.get_pdb_and_extract_ligand(pdb_id, ligand_id,
-                                                         out_dir=f"{out_dir_root}/{pdb_id}_{ligand_id}",
+    prepared_files = simulate.get_pdb_and_extract_ligand(pdb_id, ligand_id, ligand_chain,
+                                                         out_dir=out_dir,
                                                          use_pdb_redo=use_pdb_redo)
 
-    sim_files = simulate.simulate(prepared_files["pdb"], prepared_files["sdf"],
-                                  f"{out_dir_root}/{pdb_id}_{ligand_id}/{pdb_id}_{ligand_id}",
-                                  num_steps, minimize_only=minimize_only,
-                                  use_solvent=use_solvent, decoy_smiles=decoy_smiles,
+    #
+    # Mutate a residue and relax again.
+    # Mutate prepared_files["pdb"] to ensure consistency
+    # e.g., LEU-117-VAL-AB, following PDBFixer format (but adding chains)
+    #
+    if mutation is not None:
+        mutate_from, mutate_resn, mutate_to, mutate_chains = mutation.split("-")
+        out_stem = (f"{out_dir}/{Path(prepared_files['pdb']).stem}_{mutate_from}{mutate_resn}{mutate_to}_{mutate_chains}")
+        copy(prepared_files["pdb"], f"{out_stem}.pdb")
+        mutated_pdb = simulate.get_pdb_and_extract_ligand(f"{out_stem}.pdb", out_dir=out_dir,
+                                                          use_pdb_redo=use_pdb_redo,
+                                                          mutation=(mutate_from, mutate_resn, mutate_to, mutate_chains))
+        prepared_files["pdb"] = mutated_pdb["pdb"]
+
+    sim_files = simulate.simulate(prepared_files["pdb"], prepared_files["sdf"], out_stem, num_steps, 
+                                  minimize_only=minimize_only, use_solvent=use_solvent, decoy_smiles=decoy_smiles,
                                   temperature=temperature, equilibration_steps=equilibration_steps)
 
     # read in the output files
@@ -41,20 +56,23 @@ def simulate_md_ligand(pdb_id:str, ligand_id:str, use_pdb_redo:bool,
             for out_name, fname in (prepared_files | sim_files).items()}
 
 @stub.local_entrypoint()
-def main(pdb_id:str, ligand_id:str, use_pdb_redo:bool=False,
-         num_steps:int=None,
-         use_solvent:bool=False, decoy_smiles:str|None=None, mutation:str|None=None,
+def main(pdb_id:str, ligand_id:str, ligand_chain:str,
+         use_pdb_redo:bool=False, num_steps:int=None,
+         use_solvent:bool=False, decoy_smiles:str=None, mutation:str=None,
          temperature:int=300, equilibration_steps:int=200, out_dir_root:str="out"):
-    """MD simulation of protein + ligand"""
+    """MD simulation of protein + ligand
+    mutation is a string like "ALA-117-VAL-AB"
+    """
 
-    minimize_only = True if num_steps is None else False
+    minimize_only = True if not num_steps else False
 
-    outputs = simulate_md_ligand.call(pdb_id, ligand_id,
+    # original
+    outputs = simulate_md_ligand.call(pdb_id, ligand_id, ligand_chain,
                                       use_pdb_redo, num_steps, minimize_only,
-                                      use_solvent, decoy_smiles, temperature,
-                                      equilibration_steps, out_dir_root)
+                                      use_solvent, decoy_smiles, mutation,
+                                      temperature, equilibration_steps, out_dir_root)
 
-    for _, (out_file, out_content) in outputs.items():
+    for (out_file, out_content) in outputs.values():
         if out_content:
             Path(out_file).parent.mkdir(parents=True, exist_ok=True)
             open(out_file, 'wb').write(out_content)
