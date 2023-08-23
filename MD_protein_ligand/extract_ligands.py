@@ -109,7 +109,6 @@ def _write_pdb(protein, pdb_name,
     """
     output_pdb_name = output_pdb_name or f"{pdb_name}_protein.pdb"
     writePDB(f"{output_pdb_name}", protein)
-    print(f"wrote pdb: {output_pdb_name}")
     return output_pdb_name
 
 
@@ -125,7 +124,6 @@ def _write_sdf(new_mol, pdb_name:str, res_name:str,
     output_sdf_name = output_sdf_name or f"{pdb_name}_{res_name}_ligand.sdf"
     writer = Chem.SDWriter(f"{output_sdf_name}")
     writer.write(new_mol)
-    print(f"wrote ligand sdf: {output_sdf_name}\n")
     return output_sdf_name
 
 
