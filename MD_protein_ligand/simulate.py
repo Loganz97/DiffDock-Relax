@@ -204,7 +204,7 @@ def get_pdb_and_extract_ligand(pdb_id:str,
         pdb_id = Path(pdb_file).stem
     elif use_pdb_redo:
         pdb_file = str(Path(out_dir) / f"{pdb_id}_pdbredo.pdb")
-        subprocess.run(f"wget -O {pdb_file} https://pdb-redo.eu/db/{pdb_id}/{pdb_id}_pdbredo.pdb",
+        subprocess.run(f"wget -O {pdb_file} https://pdb-redo.eu/db/{pdb_id}/{pdb_id}_final.pdb",
                        check=True, shell=True, capture_output=True)
     else:
         pdb_file = str(Path(out_dir) / f"{pdb_id}.pdb")
