@@ -3,6 +3,8 @@ from shutil import copy
 
 from modal import Image, Mount, Stub
 
+FORCE_BUILD = False
+
 stub = Stub()
 
 image = (Image
@@ -13,7 +15,7 @@ image = (Image
                               "openff-toolkit=0.14.3", "python-kaleido=0.2.1", "mdanalysis=2.5.0",
                               "prody=2.4.0"],
                              channels=["omnia", "plotly", "conda-forge"])
-         .pip_install("git+https://github.com/hgbrian/MD_protein_ligand", force_build=True)
+         .pip_install("git+https://github.com/hgbrian/MD_protein_ligand", force_build=FORCE_BUILD)
         )
 
 
