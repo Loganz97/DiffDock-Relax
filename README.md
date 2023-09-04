@@ -106,9 +106,12 @@ print(sim_files)
 
 ## Example 4: mutate amino acid and evaluate
 
-Introduce mutations from forward genetics into protein
-and test affinity after relaxing with MD
+Introduce mutations and test affinity after relaxing with MD
 (since mutations alter the protein structure)
+
+```sh
+modal run run_simulation_modal.py --pdb-id 3OG7 --ligand-id 032 --ligand-chain A --mutation LEU-505-HIS-AB
+```
 
 ### Python
 

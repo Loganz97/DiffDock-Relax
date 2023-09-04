@@ -22,6 +22,7 @@ from MDAnalysis.coordinates.PDB import PDBWriter
 from openff.toolkit.topology import Molecule
 from openmm import app, unit, LangevinIntegrator, MonteCarloBarostat, Platform
 from openmm.app import DCDReporter, Modeller, PDBFile, Simulation, StateDataReporter
+
 from openmmforcefields.generators import SystemGenerator
 from pdbfixer import PDBFixer
 from rdkit import Chem
@@ -30,24 +31,27 @@ from rdkit.Chem import rdMolTransforms, rdShapeHelpers
 
 # for convenience so I can use as a script or a module
 try:
-    from .extract_ligands import extract_ligands
+    from .extract_ligands import extract_ligand
 except ImportError:
-    from extract_ligands import extract_ligands
+    from extract_ligands import extract_ligand
 
 SMINA, SMINA_BIN = "smina", "./bin/smina"
 GNINA, GNINA_BIN = "gnina", "./bin/gnina"
 OBABEL, OBABEL_BIN = "obabel", "obabel"
-binaries = {SMINA: SMINA_BIN, GNINA: GNINA_BIN, OBABEL: OBABEL_BIN}
 SMINA_LINUX_URL = "https://sourceforge.net/projects/smina/files/smina.static/download"
 GNINA_LINUX_URL = "https://github.com/gnina/gnina/releases/download/v1.0.3/gnina"
+binaries = {SMINA: SMINA_BIN, GNINA: GNINA_BIN, OBABEL: OBABEL_BIN}
 
 PDB_PH = 7.4
 PDB_TEMPERATURE = 300 * unit.kelvin
 FRICTION_COEFF = 1.0 / unit.picosecond
+# https://docs.openforcefield.org/projects/toolkit/en/stable/faq.html
+# With step size of 2 femtoseconds
 STEP_SIZE = 0.002 * unit.picosecond
 SOLVENT_PADDING = 10.0 * unit.angstroms
 BAROSTAT_PRESSURE = 1.0 * unit.atmospheres
 BAROSTAT_FREQUENCY = 25
+# "hydrogen-involving bond constraints" is recommended
 FORCEFIELD_KWARGS = {'constraints': app.HBonds, 'rigidWater': True,
                      'removeCMMotion': False, 'hydrogenMass': 4*unit.amu}
 FORCEFIELD_PROTEIN = "amber/ff14SB.xml"
@@ -157,7 +161,7 @@ def prepare_protein(in_pdb_file:str, out_pdb_file:str, minimize_pdb:bool=False,
         simulation.context.setPositions(fixer.positions)
         simulation.minimizeEnergy()
 
-        with open(f"{Path(out_pdb_file).parent} / {Path(out_pdb_file).stem}_minimized.pdb", 'w',
+        with open(f"{Path(out_pdb_file).with_suffix('')}_minimized_no_ligand.pdb", 'w',
                   encoding='utf-8') as out:
             PDBFile.writeFile(fixer.topology,
                               simulation.context.getState(getPositions=True, enforcePeriodicBox=False).getPositions(),
@@ -216,10 +220,13 @@ def get_pdb_and_extract_ligand(pdb_id:str,
         return {"original_pdb": pdb_file, "pdb": prepared_pdb_file}
 
     # _out_pdb_file is just the protein selection (not prepared for openmm)
-    _, out_sdf_files, out_sdf_smileses = extract_ligands(pdb_file, [ligand_id], [ligand_chain])
+    out_sdf_file = str(Path(out_dir) / f"{pdb_id}_{ligand_id}.sdf")
+    _, _, out_sdf_smiles = extract_ligand(pdb_file, ligand_id, ligand_chain,
+                                          out_pdb_file=None,
+                                          out_sdf_file=out_sdf_file)
 
     return {"original_pdb": pdb_file, "pdb": prepared_pdb_file,
-            "sdf": out_sdf_files[0], "smi": out_sdf_smileses[0]}
+            "sdf": out_sdf_file, "smi": out_sdf_smiles}
 
 
 def _transform_conformer_to_match_reference(ref_rmol, alt_rmol, ref_conformer_n, alt_conformer_n):
@@ -427,7 +434,7 @@ def get_affinity(pdb_in:str, ligand_id:str, convert_to_pdbqt:bool=False,
             cmd = (f"{binaries[scoring_tool]} --cpu {max(1, os.cpu_count()-1)} --score_only "
                    f"-r {smina_protein_pdb.name} -l {smina_ligand_pdb.name}")
 
-        print(f"# Calculating score: {cmd}\n")
+        print(f"- Calculating score: {cmd}")
         smina_out = subprocess.run(cmd, check=True, shell=True, capture_output=True).stdout.decode('ascii')
 
     affinity = float(re.findall(smina_affinity_pattern, smina_out)[0])
@@ -497,7 +504,7 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
 
     os.makedirs(Path(output).parent, exist_ok=True)
     output_complex_pdb = f"{output}_complex.pdb"
-    output_minimized_pdb = f"{output}_minimised.pdb"
+    output_minimized_pdb = f"{output}_minimized.pdb"
     output_affinity_tsv = f"{output}_affinity.tsv"
     if minimize_only is not True:
         output_traj_dcd = f"{output}_traj.dcd"
@@ -591,7 +598,7 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     print("# Minimising ...")
     simulation.minimizeEnergy()
 
-    # Write out the minimised PDB.
+    # Write out the minimized PDB.
     # 'enforcePeriodicBox=False' is important otherwise the different components can end up in
     # different periodic boxes resulting in really strange looking output.
     with open(output_minimized_pdb, 'w', encoding='utf-8') as out:
@@ -631,19 +638,19 @@ def simulate(pdb_in:str, mol_in:str, output:str, num_steps:int,
     time_0 = time.time()
     simulation.step(num_steps)
     time_1 = time.time()
-    print(f"- Simulation complete in {time_1 - time_0} seconds at {temperature} K\n")
+    print(f"- Simulation complete in {time_1 - time_0} seconds at {temperature}K\n")
 
     # -------------------------------------------------------
     # Calculate affinities during the simulation
     #
-    print("Calculating affinities along trajectory...")
+    print("# Calculating affinities along trajectory...")
     traj_pdbs = extract_pdbs_from_dcd(output_complex_pdb, output_traj_dcd)
     traj_affinities = {time_ps: get_affinity(traj_pdb, OPENMM_DEFAULT_LIGAND_ID, scoring_tool=scoring_tool)
                        for time_ps, traj_pdb in traj_pdbs.items()}
     for time_ps, affinity in traj_affinities.items():
         out_affinity.write(f"{time_ps:.2f}\t{affinity:.4f}\n")
 
-    print("Running trajectory analysis...")
+    print("# Running trajectory analysis...")
     _ = analyze_traj(output_traj_dcd, output_complex_pdb, output_analysis_tsv)
 
     # Fix the state data file: from csv to tsv
