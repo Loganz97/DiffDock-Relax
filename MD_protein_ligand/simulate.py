@@ -66,7 +66,7 @@ OPENMM_DEFAULT_LIGAND_ID = "UNK"
 def _download_binary_if_missing(binary_name:str):
     def _download(path, url):
         """download binary"""
-        print(f"Downloading necessary {binary_name} binary (300Mb for gnina)")
+        print(f"Downloading {binary_name} binary (10Mb for smina, 300Mb for gnina)")
         with requests.get(url, timeout=600, stream=True) as r:
             r.raise_for_status()
             os.makedirs(Path(path).parent, exist_ok=True)
