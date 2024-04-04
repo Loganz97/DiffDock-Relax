@@ -211,9 +211,8 @@ def get_pdb_and_extract_ligand(pdb_id:str,
         subprocess.run(f"wget -O {pdb_file} https://files.rcsb.org/download/{pdb_id}.pdb",
                        check=True, shell=True, capture_output=True)
 
-    prepared_pdb_file = str(Path(out_dir) / f"{pdb_id}_fixed.pdb")
-
     # FIXFIX is it ok to prepare_protein BEFORE extracting the ligand?
+    prepared_pdb_file = str(Path(out_dir) / f"{pdb_id}_fixed.pdb")
     prepare_protein(pdb_file, prepared_pdb_file, minimize_pdb=minimize_pdb, mutation=mutation)
 
     if ligand_id is None: # then extract nothing, just prepare the protein
@@ -227,27 +226,6 @@ def get_pdb_and_extract_ligand(pdb_id:str,
 
     return {"original_pdb": pdb_file, "pdb": prepared_pdb_file,
             "sdf": out_sdf_file, "smi": out_sdf_smiles}
-
-
-def _transform_conformer_to_match_reference(ref_rmol, alt_rmol, ref_conformer_n, alt_conformer_n):
-    """
-    # TODO merge this function into the one below
-    Translate alt_conformer IN PLACE to minimize the RMSD to ref_conformer.
-
-    Instead of providing conformers directly, we have to provide a mol and the conformer number.
-    """
-    # TODO merge this function into the one below
-    centroid_ref = rdMolTransforms.ComputeCentroid(ref_rmol.GetConformer(ref_conformer_n))
-    centroid_alt = rdMolTransforms.ComputeCentroid(alt_rmol.GetConformer(alt_conformer_n))
-    translation = centroid_ref - centroid_alt
-    transformation_matrix = np.eye(4)
-    transformation_matrix[:3, 3] = translation
-    rdMolTransforms.TransformConformer(alt_rmol.GetConformer(alt_conformer_n), transformation_matrix)
-
-    # Return Tanimoto distance between the two conformers
-    shape_dist = rdShapeHelpers.ShapeTanimotoDist(ref_rmol, alt_rmol, confId1=ref_conformer_n,
-                                                  confId2=alt_conformer_n)
-    return shape_dist
 
 
 def make_decoy(reference_rmol, decoy_smiles, num_conformers = 100):
@@ -264,8 +242,6 @@ def make_decoy(reference_rmol, decoy_smiles, num_conformers = 100):
     # Generate conformers
     #AllChem.EmbedMolecule(decoy_rmol) # pretty sure this is unnecessary given EmbedMultipleConfs
     AllChem.EmbedMultipleConfs(decoy_rmol, numConfs=num_conformers)
-
-    # TODO replace below with _transform_conformer_to_match_reference
 
     # Align each conformer to the original ligand
     centroid_rmol = rdMolTransforms.ComputeCentroid(reference_rmol.GetConformer())
@@ -341,7 +317,7 @@ def prepare_system_generator(ligand_mol=None, use_solvent=False):
             molecules=[ligand_mol],
             forcefield_kwargs=FORCEFIELD_KWARGS)
     else:
-        # TODO why is `molecules` not passed for use_solvent=False in tdudgeon/simulateComplex.py?
+        # FIXFIX why is `molecules` not passed for use_solvent=False in tdudgeon/simulateComplex.py?
         # is there any harm if it is?
         system_generator = SystemGenerator(
             forcefields=[FORCEFIELD_PROTEIN],
