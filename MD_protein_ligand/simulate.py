@@ -58,7 +58,195 @@ FORCEFIELD_SMALL_MOLECULE = "gaff-2.11"
 
 OPENMM_DEFAULT_LIGAND_ID = "UNK"
 
-# ... [keep all the existing helper functions] ...
+def _download_binary_if_missing(binary_name:str):
+    def _download(path, url):
+        """download binary"""
+        print(f"Downloading {binary_name} binary (10Mb for smina, 300Mb for gnina)")
+        with requests.get(url, timeout=600, stream=True) as r:
+            r.raise_for_status()
+            os.makedirs(Path(path).parent, exist_ok=True)
+            with open(path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    f.write(chunk)
+        os.chmod(path, 0o755)
+        print(f"Downloaded {binary_name} binary\n")
+        return True
+
+    if binary_name == SMINA and not Path(SMINA_BIN).exists():
+        _download(SMINA_BIN, SMINA_LINUX_URL)
+    elif binary_name == GNINA and not Path(GNINA_BIN).exists():
+        _download(GNINA_BIN, GNINA_LINUX_URL)
+
+_download_binary_if_missing(SMINA)
+_download_binary_if_missing(GNINA)
+
+
+def get_platform():
+    """Check whether we have a GPU platform and if so set the precision to mixed"""
+
+    platform = max((Platform.getPlatform(i) for i in range(Platform.getNumPlatforms())),
+                    key=lambda p: p.getSpeed())
+
+    if platform.getName() == 'CUDA' or platform.getName() == 'OpenCL':
+        platform.setPropertyDefaultValue('Precision', 'mixed')
+        print(f"Set precision for platform {platform.getName()} to mixed\n")
+
+    return platform
+
+
+def prepare_protein(in_pdb_file:str, out_pdb_file:str, minimize_pdb:bool=False,
+                    mutation:tuple|None=None) -> bool:
+    """
+    Prepare a protein for simulation using pdbfixer and optionally minimize it using openmm.
+
+    This function fixes common issues in PDB files and prepares them for simulation.
+    It identifies missing residues, atoms, non-standard residues and heterogens, then fixes these issues.
+    It also adds missing hydrogens according to the specified pH value.
+    If the 'minimize_pdb' flag is set, the function additionally minimizes the energy of the
+    system using a Langevin integrator.
+
+    Parameters:
+    in_pdb_file (str): Path to the input PDB file.
+    out_pdb_file (str): Path to the output PDB file where the prepared protein will be saved.
+    minimize_pdb (bool, optional): A flag indicating whether to minimize the PDB file using openmm.
+        If it's a crystal from PDB, then you would not want to minimize it.
+        If it's a docked pose, then you may want to minimize it. Defaults to False.
+    mutation (tuple, optional): A mutation to apply to the protein. Defaults to None.
+        Format is (from_aa, resn, to_aa, chains).
+    Returns:
+    bool: True if the function executes successfully, raises an exception otherwise.
+
+    Warnings:
+    This function issues a warning if DMSO is found in the PDB file, suggesting manual removal.
+    """
+
+    fixer = PDBFixer(filename=in_pdb_file)
+    if mutation is not None:
+        for chain in mutation[3]:
+            fixer.applyMutations([f"{mutation[0]}-{mutation[1]}-{mutation[2]}"], chain)
+    fixer.findMissingResidues()
+    fixer.findMissingAtoms()
+    fixer.findNonstandardResidues()
+
+    print(f"# Preparing protein:\n"
+          f"- Missing residues: {fixer.missingResidues}\n"
+          f"- Atoms: {fixer.missingAtoms}\n"
+          f"- Terminals: {fixer.missingTerminals}\n"
+          f"- Non-standard: {fixer.nonstandardResidues}\n")
+
+    fixer.addMissingAtoms()
+    fixer.addMissingHydrogens(PDB_PH)
+    fixer.removeHeterogens(keepWater=False)
+
+    for res in fixer.topology.residues():
+        if res.name == 'DMS':
+            warn("DMSO found in PDB file. Maybe remove?")
+
+    # Note in the process of adding missing residues, some weird proteins are created
+    # .e.g, the PDB file could list the first N residues, but have no co-ordinates
+    # Then some combination of PDBFixer and openmm place these residues but in a straight line
+    with open(out_pdb_file, 'w', encoding='utf-8') as out:
+        PDBFile.writeFile(fixer.topology, fixer.positions, file=out, keepIds=True)
+
+    if minimize_pdb is True:
+        system_generator = SystemGenerator(forcefields=[FORCEFIELD_PROTEIN])
+        system = system_generator.create_system(fixer.topology)
+        integrator = LangevinIntegrator(PDB_TEMPERATURE, FRICTION_COEFF, STEP_SIZE)
+        simulation = Simulation(fixer.topology, system, integrator)
+        simulation.context.setPositions(fixer.positions)
+        simulation.minimizeEnergy()
+
+        with open(f"{Path(out_pdb_file).with_suffix('')}_minimized_no_ligand.pdb", 'w',
+                  encoding='utf-8') as out:
+            PDBFile.writeFile(fixer.topology,
+                              simulation.context.getState(getPositions=True, enforcePeriodicBox=False).getPositions(),
+                              file=out,
+                              keepIds=True)
+
+    return True
+
+def get_pdb_and_extract_ligand(pdb_id:str,
+                               ligand_id:str|None=None,
+                               ligand_chain:str|None=None,
+                               out_dir:str='.',
+                               use_pdb_redo:bool=False,
+                               minimize_pdb:bool=False,
+                               mutation:tuple|None=None) -> dict:
+    """
+    Download a PDB file, prepare it for MD, and extract a ligand.
+
+    This function downloads a PDB file, prepares it to a {pdb_id}_fixed.pdb file,
+    then extracts one ligand and saves it as {pdb_id}_{ligand_id}.sdf and {pdb_id}_{ligand_id}.smi
+
+    Parameters:
+    pdb_id (str): The 4-letter PDB ID or path to a local PDB file.
+    ligand_id (str): The 3-letter ligand ID.
+    ligand_chain (str): If you want to specify the chain of the ligand. Defaults to None.
+    out_dir (str): The output directory. Defaults to '.'.
+    use_pdb_redo (bool): If True, use get pdb_redo PDB ({pdb_id}_pdbredo.pdb). Defaults to False.
+    minimize_pdb (bool): If True, minimize the PDB file. Defaults to False.
+    mutation (tuple): A mutation to apply to the protein. Format is (from_aa, resn, to_aa, chains). Defaults to None.
+
+    Returns:
+    filename_dict (dict): a dict of the files produced
+    """
+
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    if pdb_id.endswith(".pdb"):
+        pdb_file = pdb_id
+        pdb_id = Path(pdb_file).stem
+    elif use_pdb_redo:
+        pdb_file = str(Path(out_dir) / f"{pdb_id}_pdbredo.pdb")
+        url = f"https://pdb-redo.eu/db/{pdb_id}/{pdb_id}_final.pdb"
+        response = requests.get(url)
+        response.raise_for_status()
+        with open(pdb_file, 'wb') as f:
+            f.write(response.content)
+    else:
+        pdb_file = str(Path(out_dir) / f"{pdb_id}.pdb")
+        url = f"https://files.rcsb.org/download/{pdb_id}.pdb"
+        response = requests.get(url)
+        response.raise_for_status()
+        with open(pdb_file, 'wb') as f:
+            f.write(response.content)
+
+    # Prepare protein
+    prepared_pdb_file = str(Path(out_dir) / f"{pdb_id}_fixed.pdb")
+    fixer = PDBFixer(filename=pdb_file)
+    if mutation is not None:
+        for chain in mutation[3]:
+            fixer.applyMutations([f"{mutation[0]}-{mutation[1]}-{mutation[2]}"], chain)
+    fixer.findMissingResidues()
+    fixer.findMissingAtoms()
+    fixer.findNonstandardResidues()
+    fixer.removeHeterogens(keepWater=False)
+    fixer.addMissingAtoms()
+    fixer.addMissingHydrogens(7.0)
+
+    with open(prepared_pdb_file, 'w') as f:
+        PDBFile.writeFile(fixer.topology, fixer.positions, f, keepIds=True)
+
+    if ligand_id is None:
+        return {"original_pdb": pdb_file, "pdb": prepared_pdb_file}
+
+    # Extract ligand
+    out_sdf_file = str(Path(out_dir) / f"{pdb_id}_{ligand_id}.sdf")
+    cmd = f"obabel -ipdb {pdb_file} -osdf -O {out_sdf_file} -l {ligand_id}"
+    if ligand_chain:
+        cmd += f" -c {ligand_chain}"
+    subprocess.run(cmd, shell=True, check=True)
+
+    # Generate SMILES
+    mol = Chem.MolFromMolFile(out_sdf_file, sanitize=False)
+    out_sdf_smiles = Chem.MolToSmiles(mol)
+
+    return {
+        "original_pdb": pdb_file,
+        "pdb": prepared_pdb_file,
+        "sdf": out_sdf_file,
+        "smi": out_sdf_smiles
+    }
 
 def simulate(pdb_in:str, mol_in:str|io.BytesIO, output:str, num_steps:int,
              use_solvent:bool=False, decoy_smiles:str|None=None, minimize_only:bool=False,
