@@ -1,5 +1,6 @@
 from pathlib import Path
 from shutil import copy
+import io
 
 from modal import Image, Mount, Stub
 
@@ -31,12 +32,6 @@ def simulate_md_ligand(pdb_id:str, ligand_id:str, ligand_chain:str,
     out_dir = f"{out_dir_root}/{pdb_id}_{ligand_id}"
     out_stem = f"{out_dir}/{pdb_id}_{ligand_id}"
 
-
-    #
-    # Mutate a residue and relax again.
-    # Mutate prepared_files["pdb"] to ensure consistency
-    # e.g., LEU-117-VAL-AB, following PDBFixer format (but adding chains)
-    #
     if mutation is not None:
         mutate_from, mutate_resn, mutate_to, mutate_chains = mutation.split("-")
         out_stem = (f"{out_stem}_{mutate_from}_{mutate_resn}_{mutate_to}_{mutate_chains}")
@@ -47,13 +42,20 @@ def simulate_md_ligand(pdb_id:str, ligand_id:str, ligand_chain:str,
                                                          mutation=(mutate_from, mutate_resn, mutate_to, mutate_chains)
                                                                   if mutation else None)
 
-    sim_files = simulate.simulate(prepared_files["pdb"], prepared_files["sdf"], out_stem, num_steps,
+    # Read SDF file into a BytesIO object
+    with open(prepared_files["sdf"], 'rb') as sdf_file:
+        sdf_buffer = io.BytesIO(sdf_file.read())
+
+    sim_files = simulate.simulate(prepared_files["pdb"], sdf_buffer, out_stem, num_steps,
                                   minimize_only=minimize_only, use_solvent=use_solvent, decoy_smiles=decoy_smiles,
                                   temperature=temperature, equilibration_steps=equilibration_steps)
 
-    # read in the output files
+    # Combine prepared_files and sim_files
+    all_files = {**prepared_files, **sim_files}
+
+    # Read in the output files
     return {out_name: (fname, open(fname, 'rb').read() if Path(fname).exists() else None)
-            for out_name, fname in (prepared_files | sim_files).items()}
+            for out_name, fname in all_files.items()}
 
 @stub.local_entrypoint()
 def main(pdb_id:str, ligand_id:str, ligand_chain:str,
@@ -80,7 +82,6 @@ def main(pdb_id:str, ligand_id:str, ligand_chain:str,
 
     minimize_only = True if not num_steps else False
 
-    # original
     outputs = simulate_md_ligand.call(pdb_id, ligand_id, ligand_chain,
                                       use_pdb_redo, num_steps, minimize_only,
                                       use_solvent, decoy_smiles, mutation,
@@ -92,4 +93,6 @@ def main(pdb_id:str, ligand_id:str, ligand_chain:str,
             with open(out_file, 'wb') as out:
                 out.write(out_content)
 
-    print({k:v[0] for k, v in outputs.items()})
+    print("Output files:")
+    for k, v in outputs.items():
+        print(f"{k}: {v[0]}")
